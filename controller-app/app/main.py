@@ -1,5 +1,7 @@
 import asyncio
 import logging
+from collections import deque
+from datetime import datetime
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -11,11 +13,67 @@ from .warp_controller import WarpController
 # Configuration
 SOCKS5_PORT = 1080
 
-# Logging
+# Logging setup with custom handler
+class LogCollector(logging.Handler):
+    def __init__(self, maxlen=100):
+        super().__init__()
+        self.logs = deque(maxlen=maxlen)
+        self.formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%H:%M:%S'
+        )
+        self._loop = None
+    
+    def set_loop(self, loop):
+        """设置事件循环引用"""
+        self._loop = loop
+    
+    def emit(self, record):
+        log_entry = {
+            'timestamp': datetime.fromtimestamp(record.created).strftime('%H:%M:%S'),
+            'level': record.levelname,
+            'logger': record.name,
+            'message': self.format(record)
+        }
+        self.logs.append(log_entry)
+        
+        # Broadcast to all websocket clients (线程安全)
+        try:
+            if self._loop and self._loop.is_running():
+                # 从其他线程安全地调度到事件循环
+                self._loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(broadcast_log(log_entry))
+                )
+        except Exception:
+            pass  # 忽略广播失败
+
+log_collector = LogCollector(maxlen=200)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Add collector to root logger
+root_logger = logging.getLogger()
+root_logger.addHandler(log_collector)
+
+# Broadcast log helper - manager will be defined later
+async def broadcast_log(log_entry):
+    """Broadcast log entry to all connected websocket clients"""
+    try:
+        # manager is defined later, so we use globals() to access it
+        if 'manager' in globals():
+            await globals()['manager'].broadcast({'type': 'log', 'data': log_entry})
+    except:
+        pass
+
 app = FastAPI(title="WARP Single Client")
+
+# 启动事件：设置事件循环引用
+@app.on_event("startup")
+async def startup_event():
+    """应用启动时设置事件循环"""
+    loop = asyncio.get_running_loop()
+    log_collector.set_loop(loop)
+    logger.info("Event loop configured for log broadcasting")
 
 # CORS
 app.add_middleware(
@@ -68,17 +126,37 @@ async def disconnect():
 
 @app.post("/api/rotate")
 async def rotate_ip():
-    # To rotate IP, we usually disconnect and reconnect, or force re-registration
-    # For now, let's try a disconnect/connect cycle
+    """
+    轮换 IP 地址（简单模式：断开重连）
+    
+    Returns:
+        轮换结果
+    """
+    # 简单模式：断开重连
     warp_controller.disconnect()
-    await asyncio.sleep(1) # Wait a bit
+    await asyncio.sleep(1)
     success = warp_controller.connect()
     
-    # Check if we have a new IP? (Ideally we check this, but for now just return status)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to rotate (reconnect failed)")
     
     return warp_controller.get_status()
+
+
+
+@app.get("/api/logs")
+async def get_logs(limit: int = 100):
+    """
+    获取最近的日志记录
+    
+    Args:
+        limit: 返回的日志数量限制（默认100）
+    """
+    logs = list(log_collector.logs)
+    return {
+        "total": len(logs),
+        "logs": logs[-limit:]
+    }
 
 
 # WebSocket for real-time updates
@@ -126,3 +204,4 @@ async def websocket_endpoint(websocket: WebSocket):
             
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+

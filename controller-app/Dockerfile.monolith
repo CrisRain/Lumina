@@ -10,10 +10,11 @@ RUN npm run build
 # Stage 2: Final Monolithic Image
 FROM ubuntu:22.04
 
-# Install basic deps + python + warp deps
+# Install basic deps + python + warp deps + networking tools
 RUN apt-get update && apt-get install -y \
     curl gpg lsb-release ca-certificates dbus \
     python3 python3-pip socat supervisor \
+    iputils-ping iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Cloudflare Warp
