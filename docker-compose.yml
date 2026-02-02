@@ -4,7 +4,7 @@ services:
   warp:
     build:
       context: .
-      dockerfile: controller-app/Dockerfile.monolith
+      dockerfile: Dockerfile
     image: warppanel-monolith:latest
     container_name: warppanel-client
     restart: unless-stopped

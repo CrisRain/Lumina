@@ -29,7 +29,41 @@ WarpPanel 是一个现代化的 Web 控制面板，专为管理单实例 Cloudfl
 - Docker Desktop (或 Docker Engine + Docker Compose)
 - Git
 
-### 安装步骤
+### 方式一：Docker Hub 快速启动 (推荐)
+
+无需构建代码，直接使用预构建镜像：
+
+1. 创建 `docker-compose.yml` 文件：
+
+```yaml
+version: '3.8'
+services:
+  warp:
+    image: crisocean/warppanel:latest
+    container_name: warppanel
+    restart: unless-stopped
+    cap_add: [NET_ADMIN]
+    devices: [/dev/net/tun]
+    sysctls: [net.ipv6.conf.all.disable_ipv6=0]
+    ports:
+      - "5173:8000" # Web UI
+      - "1080:1080" # SOCKS5 Proxy
+    volumes:
+      - warp_data:/var/lib/cloudflare-warp
+
+volumes:
+  warp_data:
+```
+
+2. 启动服务：
+
+```bash
+docker-compose up -d
+```
+
+### 方式二：从源码构建
+
+如果您想修改代码或自己构建：
 
 1. 克隆项目仓库：
 
