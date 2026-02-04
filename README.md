@@ -63,6 +63,8 @@ services:
 volumes:
   warp_data:
 
+```
+
 ### 🎮 双后端模式 (Dual Backend)
 
 WarpPanel 现在支持两种 WARP 核心，您可以根据需要在 Web 界面随时切换：
