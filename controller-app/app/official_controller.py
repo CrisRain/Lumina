@@ -15,9 +15,18 @@ logger = logging.getLogger(__name__)
 class OfficialController:
     """Control official Cloudflare WARP client"""
     
+    # Class-level status cache
+    _status_cache = None
+    _status_cache_time = 0
+    _STATUS_CACHE_TTL = 8  # seconds
+    
     def __init__(self, socks5_port: int = 1080):
         self.socks5_port = socks5_port
         self.mute_backend_logs = False
+        self.preferred_protocol = "wireguard"
+        self._cached_ip_info = None
+        self._cache_time: float = 0
+        self._cache_ttl: float = 120  # Cache IP info for 120 seconds (reduce proxy traffic)
 
     def _stream_logs(self, process, name):
         """Read logs from process and log them until muted"""
@@ -68,7 +77,7 @@ class OfficialController:
         self.execute_command("warp-cli --accept-tos mode proxy")
         self.execute_command("warp-cli --accept-tos proxy port 40001")
         
-        output = self.execute_command("warp-cli --accept-tos connect")
+        self.execute_command("warp-cli --accept-tos connect")
         # Output logging removed as per user request
         
         # Wait a moment for state change
@@ -77,6 +86,7 @@ class OfficialController:
         if self.wait_for_status("connected", timeout=600):
             # Mute backend logs after successful connection
             self.mute_backend_logs = True
+            self._invalidate_status_cache()
             logger.info("Official WARP connection successful")
             return True
         
@@ -88,6 +98,7 @@ class OfficialController:
     def disconnect(self) -> bool:
         """Disconnect from WARP and stop services"""
         logger.info("Disconnecting WARP (official)...")
+        self._cached_ip_info = None
         
         # Try graceful disconnect first
         try:
@@ -106,7 +117,7 @@ class OfficialController:
             # 1. Check systemd status
             # systemctl is-active returns 0 if active
             res = subprocess.run(
-                ["systemctl", "is-active", "warp-svc"], 
+                ["systemctl", "is-active", "warp-svc"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
@@ -134,7 +145,7 @@ class OfficialController:
     def _start_services(self) -> bool:
         """Start warp-svc via systemd and socat"""
         try:
-            logger.info("Starting background services (systemd)...")
+            logger.info("Starting background services (supervisor)...")
             
             # Reset mute flag on start
             self.mute_backend_logs = False
@@ -179,9 +190,9 @@ class OfficialController:
                 self.execute_command("warp-cli --accept-tos registration delete")
                 self.execute_command("warp-cli --accept-tos registration new")
             
-            # Force WireGuard protocol (default) to avoid MASQUE issues seen in logs
-            # implicitly resets protocol if it was changed
-            self.execute_command("warp-cli --accept-tos tunnel protocol set MASQUE")
+            # Set protocol based on preference (wireguard or masque)
+            cli_protocol = "MASQUE" if self.preferred_protocol == "masque" else "WireGuard"
+            self.execute_command(f"warp-cli --accept-tos tunnel protocol set {cli_protocol}")
             
             # Configure Proxy Mode
             self.execute_command("warp-cli --accept-tos mode proxy")
@@ -194,12 +205,12 @@ class OfficialController:
 
     def _stop_services(self):
         """Stop warp-svc and socat"""
-        logger.info("Stopping official services (systemd)...")
+        logger.info("Stopping official services (supervisor)...")
         try:
-            # Stop socat via systemd
+            # Stop socat
             subprocess.run(["systemctl", "stop", "socat"], check=False)
             
-            # Stop warp-svc via systemd
+            # Stop warp-svc
             subprocess.run(["systemctl", "stop", "warp-svc"], check=False)
             
         except Exception as e:
@@ -254,18 +265,17 @@ class OfficialController:
             logger.error(f"Error starting socat: {e}")
 
     def is_connected(self) -> bool:
-        """Check if WARP is connected and daemon is running"""
+        """Check if WARP is connected and daemon is running (lightweight)"""
         if not self._check_daemon_running():
             return False
             
         try:
-            # Run status command silently
             result = subprocess.run(
                 "warp-cli --accept-tos status", 
                 shell=True, 
                 capture_output=True, 
                 text=True,
-                timeout=5
+                timeout=3
             )
             
             if result.returncode != 0:
@@ -277,6 +287,23 @@ class OfficialController:
             return False
 
     def get_status(self) -> Dict:
+        """Get connection status and IP information (cached)"""
+        now = time.time()
+        if (OfficialController._status_cache is not None
+            and now - OfficialController._status_cache_time < OfficialController._STATUS_CACHE_TTL):
+            return OfficialController._status_cache
+        
+        status = self._get_status_uncached()
+        OfficialController._status_cache = status
+        OfficialController._status_cache_time = now
+        return status
+    
+    def _invalidate_status_cache(self):
+        """Invalidate status cache after connect/disconnect"""
+        OfficialController._status_cache = None
+        OfficialController._status_cache_time = 0
+    
+    def _get_status_uncached(self) -> Dict:
         """Get connection status and IP information"""
         base_status = {
             "backend": "official",
@@ -286,7 +313,7 @@ class OfficialController:
             "city": "Unknown",
             "country": "Unknown",
             "isp": "Cloudflare WARP",
-            "warp_protocol": "MASQUE",
+            "warp_protocol": self.preferred_protocol.upper(),
             "connection_time": "Unknown",
             "network_type": "Unknown",
             "proxy_address": f"socks5://127.0.0.1:{self.socks5_port}",
@@ -294,62 +321,79 @@ class OfficialController:
         }
         
         if not self.is_connected():
+            self._cached_ip_info = None
             return base_status
         
         base_status["status"] = "connected"
         
-        # Get IP info through the proxy
+        # Use cached IP info if still fresh
+        now = time.time()
+        if self._cached_ip_info and (now - self._cache_time) < self._cache_ttl:
+            base_status.update(self._cached_ip_info)
+            return base_status
+        
+        # Fetch IP info through the proxy
+        ip_info = self._fetch_ip_info()
+        if ip_info:
+            self._cached_ip_info = ip_info
+            self._cache_time = now
+            base_status.update(ip_info)
+        elif self._cached_ip_info:
+            # Use stale cache if fetch failed
+            base_status.update(self._cached_ip_info)
+        
+        return base_status
+
+    def _fetch_ip_info(self) -> dict:
+        """Fetch IP information through the proxy.
+        Uses the proxy to get the WARP exit IP.
+        Cached for 120s to minimize traffic consumption.
+        """
         try:
             result = subprocess.run(
                 [
                     "curl",
                     "-x", f"socks5h://127.0.0.1:{self.socks5_port}",
                     "-s",
-                    "--max-time", "10",
-                    "https://www.cloudflare.com/cdn-cgi/trace"
+                    "--max-time", "5",
+                    "http://ip-api.com/line/?fields=query,country,city,isp"
                 ],
                 capture_output=True,
                 text=True,
-                timeout=15
+                timeout=8
             )
             
             if result.returncode == 0 and result.stdout:
-                info = {}
-                for line in result.stdout.split('\n'):
-                    if "=" in line:
-                        k, v = line.split("=", 1)
-                        info[k.strip()] = v.strip()
-                
-                base_status["ip"] = info.get("ip", "Unknown")
-                base_status["location"] = info.get("loc", "Unknown")
-                
-                colo = info.get("colo", "")
-                if colo:
-                    base_status["city"] = self._get_city_from_colo(colo)
-                
-                loc_code = info.get("loc", "")
-                if loc_code:
-                    base_status["country"] = self._get_country_name(loc_code)
-                
-                base_status["details"]["trace"] = info
+                # ip-api.com/line/ returns: query\ncountry\ncity\nisp
+                lines = [l.strip() for l in result.stdout.strip().split('\n')]
+                if len(lines) >= 4:
+                    ip_data = {
+                        "ip": lines[0] or "Unknown",
+                        "country": lines[1] or "Unknown",
+                        "city": lines[2] or "Unknown",
+                        "location": lines[1] or "Unknown",
+                        "details": {"isp": lines[3]}
+                    }
+                    return ip_data
                 
         except subprocess.TimeoutExpired:
-            # logger.warning("Timeout getting IP info through proxy")
-            pass
+            logger.warning("Timeout getting IP info through proxy")
         except Exception as e:
-            # logger.error(f"Error getting IP info: {e}")
-            pass
+            logger.error(f"Error getting IP info: {e}")
         
-        return base_status
+        return None
 
     def wait_for_status(self, target_status: str, timeout: int = 15) -> bool:
-        """Wait for specific connection status"""
+        """Wait for specific connection status using lightweight checks"""
         start_time = time.time()
         while time.time() - start_time < timeout:
-            status = self.get_status()
-            if status.get("status") == target_status:
+            if target_status == "connected" and self.is_connected():
+                self._invalidate_status_cache()
                 return True
-            time.sleep(1)
+            elif target_status == "disconnected" and not self.is_connected():
+                self._invalidate_status_cache()
+                return True
+            time.sleep(2)
         return False
 
     def rotate_ip_simple(self) -> bool:
@@ -379,28 +423,51 @@ class OfficialController:
                 # Set
                 logger.info(f"Setting custom endpoint to {endpoint} (official)...")
                 cmd = f"warp-cli --accept-tos tunnel endpoint set {endpoint}"
-            
-            res = self.execute_command(cmd)
-            # warp-cli usually returns minimal output on success, or "Success"
-            # execute_command returns stdout (string) or None on failure.
-            
-            # Restart/Reconnect might be needed? 
-            # Usually endpoint changes apply immediately or on next connect.
-            # Let's force reconnect to be safe and consistent with usque behavior
-            if self.is_connected():
-                # self.disconnect() # Disconnect is slow/heavy
-                # Just disconnect logic?
-                # Actually official client might just need a reconnect.
-                # Let's try to just return True, caller might decide to reconnect?
-                # But usque reconnects. Let's be consistent.
-                self.disconnect()
-                time.sleep(2)
-                return self.connect()
 
-            return True
+            self.execute_command(cmd)
+
+            try:
+                self.execute_command("warp-cli --accept-tos disconnect")
+                self.wait_for_status("disconnected", timeout=5)
+            except:
+                pass
+            time.sleep(10)
+            return self.connect()
 
         except Exception as e:
             logger.error(f"Failed to set custom endpoint: {e}")
+            return False
+
+    def set_protocol(self, protocol: str) -> bool:
+        """Set WARP protocol (masque or wireguard)"""
+        protocol = protocol.lower()
+        if protocol not in ["masque", "wireguard"]:
+            logger.error(f"Invalid protocol: {protocol}")
+            return False
+        
+        self.preferred_protocol = protocol
+        
+        try:
+            logger.info(f"Setting WARP protocol to {protocol}...")
+            
+            # Need to disconnect to change protocol usually
+            try:
+                self.execute_command("warp-cli --accept-tos disconnect")
+                self.wait_for_status("disconnected", timeout=5)
+            except:
+                pass
+                
+            # Map protocol to CLI expected case
+            cli_protocol = "MASQUE" if protocol == "masque" else "WireGuard"
+            cmd = f"warp-cli --accept-tos tunnel protocol set {cli_protocol}"
+            res = self.execute_command(cmd)
+            
+            # Reconnect (this will re-apply settings including protocol via _configure_warp if services restart, 
+            # or we just connect now)
+            return self.connect()
+            
+        except Exception as e:
+            logger.error(f"Failed to set protocol: {e}")
             return False
 
     def _get_city_from_colo(self, colo: str) -> str:

@@ -22,8 +22,9 @@ FROM ubuntu:22.04
 RUN apt-get update && apt-get install -y \
     curl gpg lsb-release ca-certificates dbus \
     python3 python3-pip socat \
-    iputils-ping iproute2 systemd systemd-sysv \
-    && rm -rf /var/lib/apt/lists/*
+    iputils-ping iproute2 systemd systemd-sysv procps \
+    && rm -rf /var/lib/apt/lists/* \
+    && systemctl mask getty@tty1.service console-getty.service
 
 # Install Cloudflare Warp (official client - kept for fallback)
 RUN curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg \
@@ -37,29 +38,24 @@ COPY --from=usque-download /tmp/usque /usr/local/bin/usque
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 COPY controller-app/requirements.txt .
-# Remove docker from requirements if present, or just install what we need. 
-# We'll install manually to be safe/clean or rely on updated requirements.txt. 
-# Better to update requirements.txt first.
 RUN pip3 install --no-cache-dir -r requirements.txt
-# Install uvicorn explicitly if not in requirements
-RUN pip3 install uvicorn
+RUN pip3 install uvicorn psutil
 
 # Copy Backend Code
 COPY controller-app/app /app/app
 # Copy Frontend Build
 COPY --from=frontend-build /frontend_app/dist /app/static
 
-# Configs
+# Systemd Services
 COPY controller-app/usque.service /etc/systemd/system/usque.service
-# removed warppool-api.service
 COPY controller-app/socat.service /etc/systemd/system/socat.service
+COPY controller-app/warppool-api.service /etc/systemd/system/warppool-api.service
 
-# # Enable services (warp-svc is official daemon, usque is alternative)
-# # socat is needed for official client
-# RUN systemctl enable warp-svc
-# RUN systemctl enable usque
-# RUN systemctl enable warppool-api
-# RUN systemctl enable socat
+RUN systemctl enable warppool-api.service
+# Disable other services (manual control by API)
+RUN systemctl disable warp-svc
+RUN systemctl disable usque
+RUN systemctl disable socat
 
 # Ports
 # 8000: Web UI + API
@@ -70,6 +66,5 @@ EXPOSE 8000 1080
 COPY controller-app/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# Use systemd as init, but via entrypoint wrapper to start API
-STOPSIGNAL SIGRTMIN+3
+# Use entrypoint to start init
 CMD ["/app/entrypoint.sh"]

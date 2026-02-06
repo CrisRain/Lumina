@@ -1,15 +1,18 @@
 #!/bin/bash
 set -e
 
-# Start the API in the background.
-# We delay slightly to allow systemd (which we exec below) to initialize.
-(
-    echo "Waiting for systemd to initialize..."
-    sleep 5
-    echo "Starting Warppool API..."
-    cd /app
-    exec /usr/local/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
-) &
+# Start DBus (required for warp-svc)
+mkdir -p /run/dbus
+if [ -f /run/dbus/pid ]; then
+  rm /run/dbus/pid
+fi
+dbus-daemon --config-file=/usr/share/dbus-1/system.conf --print-address --fork
 
-# Execute systemd as PID 1 to manage other services (usque, etc.)
+# Create log file for warppool-api
+touch /var/log/warppool-api.log
+
+# Tail the log in background so docker logs can see it
+tail -f /var/log/warppool-api.log &
+
+# Start systemd (which manages warp-svc, warppool-api, usque, socat)
 exec /sbin/init

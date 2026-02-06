@@ -9,10 +9,12 @@ services:
     privileged: true
     environment:
       - WARP_BACKEND=official # Options: 'usque' (default), 'official'
-    devices: [ /dev/net/tun ]
+    devices:
+      - /dev/net/tun
+    stop_signal: SIGRTMIN+3
     ports:
       - "5173:8000" # Web UI (served by FastAPI)
-      - "1080:1080" # SOCKS5 Proxy
+      - "127.0.0.1:1080:1080" # SOCKS5 Proxy (localhost only, prevent open proxy abuse)
     volumes:
       - warp_data:/var/lib/cloudflare-warp
       - warp_usque:/var/lib/warp

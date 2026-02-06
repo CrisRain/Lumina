@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +14,9 @@ from .warp_controller import WarpController
 # Configuration
 SOCKS5_PORT = 1080
 
+# Limit thread pool to avoid unbounded thread creation
+_thread_pool = ThreadPoolExecutor(max_workers=4)
+
 # Filter for noisy connection logs
 class ConnectionFilter(logging.Filter):
     def filter(self, record):
@@ -24,18 +28,19 @@ class LogCollector(logging.Handler):
     def __init__(self, maxlen=100):
         super().__init__()
         self.logs = deque(maxlen=maxlen)
+        self._pending_logs: deque = deque(maxlen=maxlen)
         self.formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%H:%M:%S'
         )
         self._loop = None
+        self._flush_scheduled = False
     
     def set_loop(self, loop):
         """设置事件循环引用"""
         self._loop = loop
     
     def emit(self, record):
-        # Filter is applied at handler level, so we don't need to check here
         log_entry = {
             'timestamp': datetime.fromtimestamp(record.created).strftime('%H:%M:%S'),
             'level': record.levelname,
@@ -43,16 +48,30 @@ class LogCollector(logging.Handler):
             'message': self.format(record)
         }
         self.logs.append(log_entry)
+        self._pending_logs.append(log_entry)
         
-        # Broadcast to all websocket clients (线程安全)
-        try:
-            if self._loop and self._loop.is_running():
-                # 从其他线程安全地调度到事件循环
-                self._loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(broadcast_log(log_entry))
-                )
-        except Exception:
-            pass  # 忽略广播失败
+        # Schedule a single flush instead of one task per log line
+        if not self._flush_scheduled:
+            self._flush_scheduled = True
+            try:
+                if self._loop and self._loop.is_running():
+                    self._loop.call_soon_threadsafe(self._schedule_flush)
+            except Exception:
+                self._flush_scheduled = False
+    
+    def _schedule_flush(self):
+        asyncio.create_task(self._flush_pending_logs())
+    
+    async def _flush_pending_logs(self):
+        """Batch-broadcast pending logs to reduce task creation overhead"""
+        await asyncio.sleep(0.1)  # 100ms debounce
+        self._flush_scheduled = False
+        if 'manager' not in globals():
+            return
+        mgr = globals()['manager']
+        while self._pending_logs:
+            entry = self._pending_logs.popleft()
+            await mgr.broadcast({'type': 'log', 'data': entry})
 
 log_collector = LogCollector(maxlen=200)
 logging.basicConfig(level=logging.INFO)
@@ -70,16 +89,6 @@ for handler in root_logger.handlers:
 # Also suppress uvicorn access logs if needed (optional, but "connection open" usually comes from uvicorn.error/asgi)
 logging.getLogger("uvicorn.access").addFilter(conn_filter)
 logging.getLogger("uvicorn.error").addFilter(conn_filter)
-
-# Broadcast log helper - manager will be defined later
-async def broadcast_log(log_entry):
-    """Broadcast log entry to all connected websocket clients"""
-    try:
-        # manager is defined later, so we use globals() to access it
-        if 'manager' in globals():
-            await globals()['manager'].broadcast({'type': 'log', 'data': log_entry})
-    except:
-        pass
 
 app = FastAPI(title="WARP Single Client")
 
@@ -112,11 +121,30 @@ async def init_controller():
     logger.info("Starting WARP backend...")
     # Run in background task to avoid blocking startup
     asyncio.create_task(connect_in_background(controller))
+    # Start shared status broadcaster
+    asyncio.create_task(status_broadcast_loop())
 
 async def connect_in_background(controller):
     logger.info("Starting WARP backend (background)...")
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, controller.connect)
+
+async def status_broadcast_loop(interval: float = 10.0):
+    """Periodically broadcast status to all connected clients.
+    Uses a single polling loop to avoid per-connection polling overhead.
+    Interval increased to 10s to reduce subprocess spawning.
+    """
+    while True:
+        try:
+            if manager.active_connections:
+                status = await run_blocking(WarpController.get_instance().get_status)
+                await manager.broadcast({"type": "status", "data": status})
+                await asyncio.sleep(interval)
+            else:
+                # No clients connected, no need to poll frequently
+                await asyncio.sleep(5.0)
+        except Exception:
+            await asyncio.sleep(interval)
 
 # Serve Frontend
 # We assume the frontend build is copied to /app/static in the Docker image
@@ -130,10 +158,10 @@ if os.path.exists("/app/static"):
 else:
     logger.warning("Static files directory /app/static not found. Frontend will not be served.")
 
-# Helper for running blocking functions
+# Helper for running blocking functions (uses bounded thread pool)
 async def run_blocking(func, *args):
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, func, *args)
+    return await loop.run_in_executor(_thread_pool, func, *args)
 
 @app.get("/api/status")
 async def get_status():
@@ -229,6 +257,25 @@ async def set_endpoint(request: dict):
         raise HTTPException(status_code=501, detail="Backend does not support custom endpoints")
 
 
+@app.post("/api/config/protocol")
+async def set_protocol(request: dict):
+    """Set WARP protocol (masque or wireguard)"""
+    protocol = request.get("protocol", "").strip().lower()
+    if protocol not in ["masque", "wireguard"]:
+        raise HTTPException(status_code=400, detail="Invalid protocol. Use 'masque' or 'wireguard'")
+        
+    controller = WarpController.get_instance()
+    
+    if hasattr(controller, 'set_protocol'):
+        success = await run_blocking(controller.set_protocol, protocol)
+        if success:
+             return {"success": True, "protocol": protocol}
+        else:
+             raise HTTPException(status_code=500, detail="Failed to set protocol")
+    else:
+        raise HTTPException(status_code=501, detail="Backend does not support protocol switching")
+
+
 @app.get("/api/logs")
 async def get_logs(limit: int = 100):
     """
@@ -254,14 +301,20 @@ class ConnectionManager:
         self.active_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
+        dead_connections = []
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
             except Exception:
-                pass # Handle broken pipes
+                dead_connections.append(connection)
+        # Clean up broken connections to prevent memory leak
+        for conn in dead_connections:
+            if conn in self.active_connections:
+                self.active_connections.remove(conn)
 
 manager = ConnectionManager()
 
@@ -273,28 +326,18 @@ async def websocket_endpoint(websocket: WebSocket):
         initial_status = await run_blocking(WarpController.get_instance().get_status)
         await websocket.send_json({"type": "status", "data": initial_status})
         
-        # Poll and push status updates every few seconds? 
-        # Or just rely on client polling/actions?
-        # Let's add a background poller for this socket session or global
+        # Keep connection alive without per-connection polling
         while True:
-            # Wait for messages (keepalive) or just sleep and push
-            # Simple keepalive:
             try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
+                await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
             except asyncio.TimeoutError:
-                # Timeout is fine, just push status
-                pass
+                continue
             except WebSocketDisconnect:
-                break
-                
-            status = await run_blocking(WarpController.get_instance().get_status)
-            try:
-                await websocket.send_json({"type": "status", "data": status})
-            except (RuntimeError, WebSocketDisconnect):
-                # Socket likely closed
                 break
             
     except WebSocketDisconnect:
+        pass
+    finally:
         manager.disconnect(websocket)
 
 
