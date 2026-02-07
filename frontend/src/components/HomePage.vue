@@ -66,47 +66,6 @@
               </div>
             </div>
 
-            <!-- Protocol Selector (Only for Official) -->
-            <div v-if="backend === 'official'" class="relative group z-40">
-              <button 
-                class="flex items-center gap-2 text-xs font-medium px-3 py-2 rounded-full border backdrop-blur-md shadow-sm transition-all duration-200 bg-blue-50 text-blue-700 border-blue-200"
-                :disabled="isSettingProtocol"
-              >
-                <span v-if="isSettingProtocol" class="animate-spin h-1.5 w-1.5 border-2 border-blue-500/30 border-t-blue-500 rounded-full"></span>
-                <span v-else class="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
-                <span class="uppercase tracking-wider">{{ protocol }}</span>
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
-              
-               <!-- Dropdown -->
-              <div class="absolute right-0 top-full mt-2 w-40 bg-white rounded-xl shadow-xl border border-gray-100 overflow-hidden opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 transform origin-top-right">
-                <div class="p-1">
-                  <button 
-                    @click="setProtocol('masque')"
-                    class="w-full text-left px-3 py-2 text-xs font-medium rounded-lg transition-colors flex items-center justify-between"
-                    :class="protocol.toLowerCase() === 'masque' ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50'"
-                  >
-                    <span>MASQUE</span>
-                    <svg v-if="protocol.toLowerCase() === 'masque'" xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-                    </svg>
-                  </button>
-                  <button 
-                    @click="setProtocol('wireguard')"
-                    class="w-full text-left px-3 py-2 text-xs font-medium rounded-lg transition-colors flex items-center justify-between"
-                    :class="protocol.toLowerCase() === 'wireguard' ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50'"
-                  >
-                    <span>WIREGUARD</span>
-                    <svg v-if="protocol.toLowerCase() === 'wireguard'" xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            </div>
-
             <div class="flex items-center gap-2 text-xs font-medium text-gray-600 bg-orange-50 px-4 py-2 rounded-full border border-orange-200/70 backdrop-blur-md shadow-sm">
             <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shadow-sm shadow-emerald-400/50"></div>
             <span>v1.3.0</span>
@@ -426,12 +385,12 @@ const logs = ref([]);
 let socket = null;
 
 const isConnected = computed(() => statusData.value.status === 'connected');
-const ipAddress = computed(() => statusData.value.ip);
+const ipAddress = computed(() => statusData.value.ip || statusData.value.details?.ip || 'Unknown');
 const location = computed(() => statusData.value.location);
-const city = computed(() => statusData.value.city || 'Unknown');
-const country = computed(() => statusData.value.country || 'Unknown');
-const isp = computed(() => statusData.value.isp || 'Cloudflare WARP');
-const protocol = computed(() => statusData.value.warp_protocol || 'Unknown');
+const city = computed(() => statusData.value.city || statusData.value.details?.city || 'Unknown');
+const country = computed(() => statusData.value.country || statusData.value.location || 'Unknown');
+const isp = computed(() => statusData.value.isp || statusData.value.details?.isp || 'Cloudflare WARP');
+const protocol = computed(() => statusData.value.warp_protocol || statusData.value.protocol || 'MASQUE');
 
 const proxyAddress = computed(() => statusData.value.proxy_address || 'socks5://127.0.0.1:1080');
 
@@ -503,30 +462,6 @@ const setEndpoint = async () => {
     console.error('Set endpoint failed:', err);
   } finally {
     isSettingEndpoint.value = false;
-  }
-};
-
-const isSettingProtocol = ref(false);
-
-const setProtocol = async (newProtocol) => {
-  if (protocol.value.toLowerCase() === newProtocol.toLowerCase()) return;
-  
-  if (!confirm(`Switch protocol to ${newProtocol}? This will reconnect WARP.`)) return;
-
-  isSettingProtocol.value = true;
-  try {
-    const result = await apiCall('post', '/api/config/protocol', { protocol: newProtocol });
-    if (result && result.success) {
-      console.log('Protocol set successfully:', result.protocol);
-      // Wait for reconnection
-    } else {
-       error.value = 'Failed to set protocol';
-    }
-  } catch (err) {
-    console.error('Set protocol failed:', err);
-    error.value = 'Failed to set protocol';
-  } finally {
-    isSettingProtocol.value = false;
   }
 };
 

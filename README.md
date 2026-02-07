@@ -70,7 +70,7 @@ services:
     image: crisocean/warppanel:latest
     container_name: warppanel-client
     restart: unless-stopped
-    privileged: true # Systemd support
+    # privileged: true  # No longer needed for supervisor
     environment:
       - WARP_BACKEND=official # 'usque' (default) or 'official'
     devices:
@@ -81,7 +81,7 @@ services:
     volumes:
       - warp_data:/var/lib/cloudflare-warp
       - warp_usque:/var/lib/warp
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw # Required for systemd
+      # - /sys/fs/cgroup:/sys/fs/cgroup:rw  # Not needed for supervisor
 
 volumes:
   warp_data:
@@ -123,7 +123,7 @@ docker-compose up --build -d
     连接成功后，卡片将实时显示您的：
     - 🌍 **IP 地址** & **地理位置**
     - 🏢 **ISP 供应商**
-    - 📡 **协议类型** (WireGuard/MASQUE)
+    - 📡 **协议类型**（现已固定为 MASQUE，更稳定）
 
 4.  **自定义 Endpoint**
     在底部的输入框中填写您优选的 WARP Endpoint (格式 `IP:PORT`)，点击 **APPLY** 即可生效。留空并点击 **APPLY** 可重置为默认。

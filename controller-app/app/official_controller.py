@@ -7,6 +7,7 @@ import logging
 import os
 import time
 import threading
+import json
 from typing import Dict
 
 logging.basicConfig(level=logging.INFO)
@@ -23,7 +24,7 @@ class OfficialController:
     def __init__(self, socks5_port: int = 1080):
         self.socks5_port = socks5_port
         self.mute_backend_logs = False
-        self.preferred_protocol = "wireguard"
+        self.preferred_protocol = "masque"
         self._cached_ip_info = None
         self._cache_time: float = 0
         self._cache_ttl: float = 120  # Cache IP info for 120 seconds (reduce proxy traffic)
@@ -114,14 +115,13 @@ class OfficialController:
     def _is_daemon_responsive(self) -> bool:
         """Check if warp-svc is running AND responsive"""
         try:
-            # 1. Check systemd status
-            # systemctl is-active returns 0 if active
+            # 1. Check warp-svc status via supervisor
             res = subprocess.run(
-                ["systemctl", "is-active", "warp-svc"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                ["supervisorctl", "status", "warp-svc"],
+                capture_output=True,
+                text=True
             )
-            if res.returncode != 0:
+            if res.returncode != 0 or "RUNNING" not in res.stdout:
                 return False
 
             # 2. Check responsiveness
@@ -143,19 +143,18 @@ class OfficialController:
         return self._is_daemon_responsive()
 
     def _start_services(self) -> bool:
-        """Start warp-svc via systemd and socat"""
+        """Start warp-svc (systemctl) and socat (supervisor)"""
         try:
             logger.info("Starting background services (supervisor)...")
             
             # Reset mute flag on start
             self.mute_backend_logs = False
             
-            # 1. Start warp-svc via systemd
-            # This handles dbus and dependencies automatically
+            # 1. Start warp-svc via supervisor
             try:
-                subprocess.run(["systemctl", "start", "warp-svc"], check=True)
+                subprocess.run(["supervisorctl", "start", "warp-svc"], check=True)
             except subprocess.CalledProcessError:
-                logger.error("Failed to start warp-svc via systemctl")
+                logger.error("Failed to start warp-svc via supervisorctl")
                 return False
             
             # logging removed as per user request
@@ -190,9 +189,8 @@ class OfficialController:
                 self.execute_command("warp-cli --accept-tos registration delete")
                 self.execute_command("warp-cli --accept-tos registration new")
             
-            # Set protocol based on preference (wireguard or masque)
-            cli_protocol = "MASQUE" if self.preferred_protocol == "masque" else "WireGuard"
-            self.execute_command(f"warp-cli --accept-tos tunnel protocol set {cli_protocol}")
+            # Always enforce MASQUE protocol
+            self.execute_command("warp-cli --accept-tos tunnel protocol set MASQUE")
             
             # Configure Proxy Mode
             self.execute_command("warp-cli --accept-tos mode proxy")
@@ -207,11 +205,11 @@ class OfficialController:
         """Stop warp-svc and socat"""
         logger.info("Stopping official services (supervisor)...")
         try:
-            # Stop socat
-            subprocess.run(["systemctl", "stop", "socat"], check=False)
+            # Stop socat via supervisor
+            subprocess.run(["supervisorctl", "stop", "socat"], check=False)
             
-            # Stop warp-svc
-            subprocess.run(["systemctl", "stop", "warp-svc"], check=False)
+            # Stop warp-svc via supervisor
+            subprocess.run(["supervisorctl", "stop", "warp-svc"], check=False)
             
         except Exception as e:
             logger.error(f"Error stopping services: {e}")
@@ -232,13 +230,13 @@ class OfficialController:
         """Ensure socat service is running and listening"""
         sys_active = False
         try:
-            # Check if socat service is active
+            # Check if socat service is active via supervisor
             res = subprocess.run(
-                ["systemctl", "is-active", "socat"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                ["supervisorctl", "status", "socat"],
+                capture_output=True,
+                text=True
             )
-            sys_active = res.returncode == 0
+            sys_active = res.returncode == 0 and "RUNNING" in res.stdout
         except Exception:
             pass
             
@@ -250,7 +248,7 @@ class OfficialController:
 
         logger.info("Starting socat service...")
         try:
-            subprocess.run(["systemctl", "start", "socat"], check=True)
+            subprocess.run(["supervisorctl", "start", "socat"], check=True)
             
             # Wait a moment for port to open
             time.sleep(1)
@@ -356,7 +354,7 @@ class OfficialController:
                     "-x", f"socks5h://127.0.0.1:{self.socks5_port}",
                     "-s",
                     "--max-time", "5",
-                    "http://ip-api.com/line/?fields=query,country,city,isp"
+                    "http://ip-api.com/json/?fields=status,message,query,country,city,isp"
                 ],
                 capture_output=True,
                 text=True,
@@ -364,18 +362,20 @@ class OfficialController:
             )
             
             if result.returncode == 0 and result.stdout:
-                # ip-api.com/line/ returns: query\ncountry\ncity\nisp
-                lines = [l.strip() for l in result.stdout.strip().split('\n')]
-                if len(lines) >= 4:
+                data = json.loads(result.stdout)
+                if data.get("status") == "success":
+                    isp_value = data.get("isp") or "Cloudflare WARP"
                     ip_data = {
-                        "ip": lines[0] or "Unknown",
-                        "country": lines[1] or "Unknown",
-                        "city": lines[2] or "Unknown",
-                        "location": lines[1] or "Unknown",
-                        "details": {"isp": lines[3]}
+                        "ip": data.get("query") or "Unknown",
+                        "country": data.get("country") or "Unknown",
+                        "city": data.get("city") or "Unknown",
+                        "location": data.get("country") or "Unknown",
+                        "isp": isp_value,
+                        "details": {"isp": isp_value}
                     }
                     return ip_data
-                
+                else:
+                    logger.warning("IP API returned failure: %s", data.get("message"))
         except subprocess.TimeoutExpired:
             logger.warning("Timeout getting IP info through proxy")
         except Exception as e:
@@ -439,31 +439,38 @@ class OfficialController:
             return False
 
     def set_protocol(self, protocol: str) -> bool:
-        """Set WARP protocol (masque or wireguard)"""
-        protocol = protocol.lower()
-        if protocol not in ["masque", "wireguard"]:
-            logger.error(f"Invalid protocol: {protocol}")
+        """Set WARP protocol (MASQUE only, WireGuard removed)"""
+        protocol = (protocol or "masque").lower()
+        if protocol != "masque":
+            logger.error("WireGuard mode has been removed; only MASQUE is supported")
             return False
         
-        self.preferred_protocol = protocol
+        if self.preferred_protocol == "masque":
+            logger.info("Protocol already locked to MASQUE")
+            return True
+
+        self.preferred_protocol = "masque"
+        self._invalidate_status_cache()
+        self.mute_backend_logs = False
         
         try:
-            logger.info(f"Setting WARP protocol to {protocol}...")
+            logger.info("Re-applying MASQUE protocol settings...")
             
-            # Need to disconnect to change protocol usually
             try:
                 self.execute_command("warp-cli --accept-tos disconnect")
                 self.wait_for_status("disconnected", timeout=5)
             except:
                 pass
                 
-            # Map protocol to CLI expected case
-            cli_protocol = "MASQUE" if protocol == "masque" else "WireGuard"
-            cmd = f"warp-cli --accept-tos tunnel protocol set {cli_protocol}"
+            cmd = "warp-cli --accept-tos tunnel protocol set MASQUE"
             res = self.execute_command(cmd)
+            if res is None:
+                logger.error("Failed to update tunnel protocol via warp-cli")
+                return False
+
+            self._stop_services()
+            time.sleep(2)
             
-            # Reconnect (this will re-apply settings including protocol via _configure_warp if services restart, 
-            # or we just connect now)
             return self.connect()
             
         except Exception as e:

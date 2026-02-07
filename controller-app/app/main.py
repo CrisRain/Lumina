@@ -259,21 +259,22 @@ async def set_endpoint(request: dict):
 
 @app.post("/api/config/protocol")
 async def set_protocol(request: dict):
-    """Set WARP protocol (masque or wireguard)"""
-    protocol = request.get("protocol", "").strip().lower()
-    if protocol not in ["masque", "wireguard"]:
-        raise HTTPException(status_code=400, detail="Invalid protocol. Use 'masque' or 'wireguard'")
+    """Protocol switching disabled; MASQUE-only"""
+    protocol = request.get("protocol", "masque").strip().lower() or "masque"
+    if protocol != "masque":
+        raise HTTPException(status_code=400, detail="WireGuard mode has been removed. MASQUE is always enforced")
         
     controller = WarpController.get_instance()
     
     if hasattr(controller, 'set_protocol'):
-        success = await run_blocking(controller.set_protocol, protocol)
+        success = await run_blocking(controller.set_protocol, "masque")
         if success:
-             return {"success": True, "protocol": protocol}
+             return {"success": True, "protocol": "masque"}
         else:
-             raise HTTPException(status_code=500, detail="Failed to set protocol")
+             raise HTTPException(status_code=500, detail="Failed to re-apply MASQUE protocol")
     else:
-        raise HTTPException(status_code=501, detail="Backend does not support protocol switching")
+        # Older backends always run MASQUE; acknowledge request
+        return {"success": True, "protocol": "masque"}
 
 
 @app.get("/api/logs")

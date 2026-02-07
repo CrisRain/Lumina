@@ -18,13 +18,12 @@ RUN npm run build
 # Stage 3: Final Monolithic Image
 FROM ubuntu:22.04
 
-# Install basic deps + python + warp deps + networking tools
+# Install basic deps + python + warp deps + networking tools + supervisor
 RUN apt-get update && apt-get install -y \
     curl gpg lsb-release ca-certificates dbus \
     python3 python3-pip socat \
-    iputils-ping iproute2 systemd systemd-sysv procps \
-    && rm -rf /var/lib/apt/lists/* \
-    && systemctl mask getty@tty1.service console-getty.service
+    iputils-ping iproute2 procps supervisor \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install Cloudflare Warp (official client - kept for fallback)
 RUN curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg \
@@ -46,16 +45,8 @@ COPY controller-app/app /app/app
 # Copy Frontend Build
 COPY --from=frontend-build /frontend_app/dist /app/static
 
-# Systemd Services
-COPY controller-app/usque.service /etc/systemd/system/usque.service
-COPY controller-app/socat.service /etc/systemd/system/socat.service
-COPY controller-app/warppool-api.service /etc/systemd/system/warppool-api.service
-
-RUN systemctl enable warppool-api.service
-# Disable other services (manual control by API)
-RUN systemctl disable warp-svc
-RUN systemctl disable usque
-RUN systemctl disable socat
+# Supervisor Configuration
+COPY controller-app/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # Ports
 # 8000: Web UI + API

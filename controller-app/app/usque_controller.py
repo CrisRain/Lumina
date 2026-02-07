@@ -65,7 +65,7 @@ class UsqueController:
             return False
 
     def connect(self) -> bool:
-        """Start usque SOCKS5 proxy via systemd"""
+        """Start usque SOCKS5 proxy via supervisor"""
         # Ensure initialized (registered)
         if not self.initialize():
             logger.error("Failed to initialize usque backend")
@@ -77,8 +77,8 @@ class UsqueController:
             
         try:
             logger.info("Starting usque service...")
-            # Use systemctl to start service
-            subprocess.run(["systemctl", "start", "usque"], check=True)
+            # Use supervisorctl to start service
+            subprocess.run(["supervisorctl", "start", "usque"], check=True)
             
             # Wait for startup and readiness
             logger.info("Waiting for usque to become ready...")
@@ -96,10 +96,10 @@ class UsqueController:
             return False
     
     def disconnect(self) -> bool:
-        """Stop usque via systemd"""
+        """Stop usque via supervisor"""
         try:
             logger.info("Stopping usque service...")
-            subprocess.run(["systemctl", "stop", "usque"], check=False)
+            subprocess.run(["supervisorctl", "stop", "usque"], check=False)
             self.process = None  # Clear legacy process handle if any
             self._invalidate_status_cache()
             return True
@@ -122,15 +122,16 @@ class UsqueController:
             return False
 
     def is_connected(self) -> bool:
-        """Check if usque is running via systemd + port listening (lightweight)"""
+        """Check if usque is running via supervisor + port listening (lightweight)"""
         # 1. Check service status
         try:
             res = subprocess.run(
-                ["systemctl", "is-active", "usque"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                ["supervisorctl", "status", "usque"],
+                capture_output=True,
+                text=True
             )
-            if res.returncode != 0:
+            # supervisorctl status returns 'RUNNING' in output if active
+            if res.returncode != 0 or "RUNNING" not in res.stdout:
                 return False
         except Exception:
             return False
@@ -208,7 +209,7 @@ class UsqueController:
                     "-x", f"socks5h://127.0.0.1:{self.socks5_port}",
                     "-s",
                     "--max-time", "5",
-                    "http://ip-api.com/line/?fields=query,country,city,isp"
+                    "http://ip-api.com/json/?fields=status,message,query,country,city,isp"
                 ],
                 capture_output=True,
                 text=True,
@@ -216,18 +217,20 @@ class UsqueController:
             )
             
             if result.returncode == 0 and result.stdout:
-                # ip-api.com/line/ returns: query\ncountry\ncity\nisp
-                lines = [l.strip() for l in result.stdout.strip().split('\n')]
-                if len(lines) >= 4:
+                data = json.loads(result.stdout)
+                if data.get("status") == "success":
+                    isp_value = data.get("isp") or "Cloudflare WARP"
                     ip_data = {
-                        "ip": lines[0] or "Unknown",
-                        "country": lines[1] or "Unknown",
-                        "city": lines[2] or "Unknown",
-                        "location": lines[1] or "Unknown",
-                        "details": {"isp": lines[3]}
+                        "ip": data.get("query") or "Unknown",
+                        "country": data.get("country") or "Unknown",
+                        "city": data.get("city") or "Unknown",
+                        "location": data.get("country") or "Unknown",
+                        "isp": isp_value,
+                        "details": {"isp": isp_value}
                     }
                     return ip_data
-                
+                else:
+                    logger.warning("IP API returned failure: %s", data.get("message"))
         except subprocess.TimeoutExpired:
             logger.warning("Timeout getting IP info through proxy")
         except Exception as e:

@@ -6,8 +6,7 @@ services:
     image: crisocean/warppanel:latest
     container_name: warppanel-client
     restart: unless-stopped
-    # Systemd 需要特权模式
-    privileged: true
+    # privileged: true  # No longer needed for supervisor
     environment:
       - WARP_BACKEND=official # Options: 'usque' (default), 'official'
     devices:
@@ -18,7 +17,7 @@ services:
     volumes:
       - warp_data:/var/lib/cloudflare-warp
       - warp_usque:/var/lib/warp
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw # Systemd cgroup mounting
+      # - /sys/fs/cgroup:/sys/fs/cgroup:rw  # Not needed for supervisor
 
 volumes:
   warp_data:

@@ -6,19 +6,19 @@ services:
     image: warppanel-monolith:latest
     container_name: warppanel-client
     restart: unless-stopped
-    privileged: true
+    # privileged: true  # No longer needed for supervisor
     environment:
       - WARP_BACKEND=official # Options: 'usque' (default), 'official'
     devices:
       - /dev/net/tun
-    stop_signal: SIGRTMIN+3
+    stop_signal: SIGTERM
     ports:
       - "5173:8000" # Web UI (served by FastAPI)
       - "127.0.0.1:1080:1080" # SOCKS5 Proxy (localhost only, prevent open proxy abuse)
     volumes:
       - warp_data:/var/lib/cloudflare-warp
       - warp_usque:/var/lib/warp
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # - /sys/fs/cgroup:/sys/fs/cgroup:rw  # Not needed for supervisor
 
 volumes:
   warp_data:
