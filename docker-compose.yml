@@ -7,14 +7,18 @@ services:
     container_name: warppanel-client
     restart: unless-stopped
     # privileged: true  # No longer needed for supervisor
+    cap_add:
+      - NET_ADMIN  # Required for TUN mode
     environment:
       - WARP_BACKEND=official # Options: 'usque' (default), 'official'
+      - WARP_MODE=proxy       # Options: 'proxy' (default), 'tun'
     devices:
       - /dev/net/tun
     stop_signal: SIGTERM
     ports:
-      - "5173:8000" # Web UI (served by FastAPI)
-      - "127.0.0.1:1080:1080" # SOCKS5 Proxy (localhost only, prevent open proxy abuse)
+      - "5173:8000"            # Web UI (served by FastAPI)
+      - "127.0.0.1:1080:1080" # SOCKS5 Proxy (localhost only)
+      - "127.0.0.1:8080:8080" # HTTP Proxy  (localhost only)
     volumes:
       - warp_data:/var/lib/cloudflare-warp
       - warp_usque:/var/lib/warp

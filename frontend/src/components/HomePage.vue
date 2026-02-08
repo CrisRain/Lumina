@@ -66,6 +66,51 @@
               </div>
             </div>
 
+            <!-- Mode Selector -->
+            <div class="relative group z-40">
+              <button 
+                class="flex items-center gap-2 text-xs font-medium px-3 py-2 rounded-full border backdrop-blur-md shadow-sm transition-all duration-200"
+                :class="warpMode === 'tun' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-gray-50 text-gray-700 border-gray-200'"
+              >
+                <span class="w-1.5 h-1.5 rounded-full" :class="warpMode === 'tun' ? 'bg-emerald-500' : 'bg-gray-400'"></span>
+                <span class="uppercase tracking-wider">{{ warpMode === 'tun' ? 'TUN' : 'Proxy' }}</span>
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              
+              <div class="absolute right-0 top-full mt-2 w-52 bg-white rounded-xl shadow-xl border border-gray-100 overflow-hidden opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 transform origin-top-right">
+                <div class="p-1">
+                  <button 
+                    @click="switchMode('proxy')"
+                    class="w-full text-left px-3 py-2.5 text-xs font-medium rounded-lg transition-colors flex items-center justify-between"
+                    :class="warpMode === 'proxy' ? 'bg-gray-100 text-gray-700' : 'text-gray-600 hover:bg-gray-50'"
+                  >
+                    <div>
+                      <span>Proxy Mode</span>
+                      <p class="text-[10px] text-gray-400 font-normal mt-0.5">SOCKS5 + HTTP Proxy</p>
+                    </div>
+                    <svg v-if="warpMode === 'proxy'" xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                  </button>
+                  <button 
+                    @click="switchMode('tun')"
+                    class="w-full text-left px-3 py-2.5 text-xs font-medium rounded-lg transition-colors flex items-center justify-between"
+                    :class="warpMode === 'tun' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-600 hover:bg-gray-50'"
+                  >
+                    <div>
+                      <span>TUN Mode</span>
+                      <p class="text-[10px] text-gray-400 font-normal mt-0.5">Full tunnel via TUN device</p>
+                    </div>
+                    <svg v-if="warpMode === 'tun'" xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div class="flex items-center gap-2 text-xs font-medium text-gray-600 bg-orange-50 px-4 py-2 rounded-full border border-orange-200/70 backdrop-blur-md shadow-sm">
             <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shadow-sm shadow-emerald-400/50"></div>
             <span>v1.3.0</span>
@@ -204,17 +249,22 @@
             </div>
 
             <!-- Protocol Card -->
-            <div class="group relative overflow-hidden backdrop-blur-md bg-white/90 border border-orange-200/60 rounded-2xl p-5 shadow-lg hover:shadow-xl hover:shadow-orange-200/50 transition-all duration-300 hover:scale-[1.02]">
-              <div class="absolute -right-8 -top-8 w-32 h-32 bg-orange-200/20 rounded-full blur-2xl group-hover:bg-orange-300/30 transition-all duration-500"></div>
+            <div 
+              class="group relative overflow-hidden backdrop-blur-md bg-white/90 border rounded-2xl p-5 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-[1.02]"
+              :class="canSwitchProtocol ? 'border-indigo-200/60 hover:shadow-indigo-200/50 cursor-pointer' : 'border-orange-200/60 hover:shadow-orange-200/50'"
+              @click="canSwitchProtocol && toggleProtocol()"
+            >
+              <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full blur-2xl transition-all duration-500" :class="canSwitchProtocol ? 'bg-indigo-200/20 group-hover:bg-indigo-300/30' : 'bg-orange-200/20 group-hover:bg-orange-300/30'"></div>
               <div class="relative flex items-start gap-3">
-                <div class="p-2.5 bg-gradient-to-br from-orange-100 to-orange-200 rounded-xl ring-1 ring-orange-300/50 shadow-sm">
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-orange-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <div class="p-2.5 bg-gradient-to-br rounded-xl ring-1 shadow-sm" :class="canSwitchProtocol ? 'from-indigo-100 to-indigo-200 ring-indigo-300/50' : 'from-orange-100 to-orange-200 ring-orange-300/50'">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" :class="canSwitchProtocol ? 'text-indigo-600' : 'text-orange-600'" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                   </svg>
                 </div>
                 <div class="flex-1 min-w-0">
                   <p class="text-xs font-medium text-gray-500 mb-1">Protocol</p>
                   <p class="text-lg font-bold text-gray-900 truncate animate-fade-in" :key="protocol">{{ protocol }}</p>
+                  <p v-if="canSwitchProtocol" class="text-[10px] text-indigo-400 mt-1">Click to toggle MASQUE / WireGuard</p>
                 </div>
               </div>
             </div>
@@ -222,34 +272,67 @@
 
           </div>
 
-          <!-- Proxy Address Card - Large -->
-          <div class="group relative overflow-hidden backdrop-blur-md bg-white/90 border-2 border-orange-300/70 rounded-2xl p-6 shadow-xl hover:shadow-2xl hover:shadow-orange-300/40 transition-all duration-300 mb-6">
-            <div class="absolute -right-12 -top-12 w-40 h-40 bg-orange-200/30 rounded-full blur-3xl group-hover:bg-orange-300/40 transition-all duration-500"></div>
-            <div class="relative">
-              <div class="flex items-center justify-between mb-3">
-                <div class="flex items-center gap-3">
-                  <div class="p-3 bg-gradient-to-br from-orange-400 to-orange-500 rounded-xl shadow-lg shadow-orange-500/30">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          <!-- Proxy Address Cards - Dual -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <!-- SOCKS5 Proxy -->
+            <div class="group relative overflow-hidden backdrop-blur-md bg-white/90 border-2 border-orange-300/70 rounded-2xl p-5 shadow-xl hover:shadow-2xl hover:shadow-orange-300/40 transition-all duration-300">
+              <div class="absolute -right-12 -top-12 w-40 h-40 bg-orange-200/30 rounded-full blur-3xl group-hover:bg-orange-300/40 transition-all duration-500"></div>
+              <div class="relative">
+                <div class="flex items-center justify-between mb-3">
+                  <div class="flex items-center gap-2">
+                    <div class="p-2.5 bg-gradient-to-br from-orange-400 to-orange-500 rounded-xl shadow-lg shadow-orange-500/30">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p class="text-sm font-medium text-gray-500">SOCKS5 Proxy</p>
+                    </div>
+                  </div>
+                  <button 
+                    @click="copyToClipboard(proxyAddress)"
+                    class="px-3 py-1.5 bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg text-xs font-medium transition-all duration-200 flex items-center gap-1.5"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                     </svg>
-                  </div>
-                  <div>
-                    <p class="text-sm font-medium text-gray-500">Proxy Connection</p>
-                    <p class="text-xs text-gray-400">SOCKS5 Proxy Address</p>
-                  </div>
+                    Copy
+                  </button>
                 </div>
-                <button 
-                  @click="copyToClipboard(proxyAddress)"
-                  class="px-4 py-2 bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg text-sm font-medium transition-all duration-200 flex items-center gap-2"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                  </svg>
-                  Copy
-                </button>
+                <div class="bg-gray-50 rounded-xl p-3 border border-gray-200">
+                  <p class="text-lg font-bold font-mono text-gray-900 tracking-tight break-all animate-fade-in" :key="proxyAddress">{{ proxyAddress }}</p>
+                </div>
               </div>
-              <div class="bg-gray-50 rounded-xl p-4 border border-gray-200">
-                <p class="text-2xl font-bold font-mono text-gray-900 tracking-tight break-all animate-fade-in" :key="proxyAddress">{{ proxyAddress }}</p>
+            </div>
+
+            <!-- HTTP Proxy -->
+            <div class="group relative overflow-hidden backdrop-blur-md bg-white/90 border-2 border-blue-300/70 rounded-2xl p-5 shadow-xl hover:shadow-2xl hover:shadow-blue-300/40 transition-all duration-300">
+              <div class="absolute -right-12 -top-12 w-40 h-40 bg-blue-200/30 rounded-full blur-3xl group-hover:bg-blue-300/40 transition-all duration-500"></div>
+              <div class="relative">
+                <div class="flex items-center justify-between mb-3">
+                  <div class="flex items-center gap-2">
+                    <div class="p-2.5 bg-gradient-to-br from-blue-400 to-blue-500 rounded-xl shadow-lg shadow-blue-500/30">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p class="text-sm font-medium text-gray-500">HTTP Proxy</p>
+                    </div>
+                  </div>
+                  <button 
+                    @click="copyToClipboard(httpProxyAddress)"
+                    class="px-3 py-1.5 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-xs font-medium transition-all duration-200 flex items-center gap-1.5"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                    Copy
+                  </button>
+                </div>
+                <div class="bg-gray-50 rounded-xl p-3 border border-gray-200">
+                  <p class="text-lg font-bold font-mono text-gray-900 tracking-tight break-all animate-fade-in" :key="httpProxyAddress">{{ httpProxyAddress }}</p>
+                </div>
               </div>
             </div>
           </div>
@@ -377,8 +460,10 @@ const statusData = ref({
   details: {}
 });
 const isLoading = ref(false);
-const isRotating = ref(false); // Kept for legacy if needed, but unused in template now
+const isRotating = ref(false);
 const isSettingEndpoint = ref(false);
+const isSettingMode = ref(false);
+const isSettingProtocol = ref(false);
 const customEndpoint = ref('');
 const error = ref(null);
 const logs = ref([]);
@@ -393,6 +478,11 @@ const isp = computed(() => statusData.value.isp || statusData.value.details?.isp
 const protocol = computed(() => statusData.value.warp_protocol || statusData.value.protocol || 'MASQUE');
 
 const proxyAddress = computed(() => statusData.value.proxy_address || 'socks5://127.0.0.1:1080');
+const httpProxyAddress = computed(() => statusData.value.http_proxy_address || 'http://127.0.0.1:8080');
+const warpMode = computed(() => statusData.value.warp_mode || 'proxy');
+
+// WireGuard protocol switching: only available for official backend + TUN mode
+const canSwitchProtocol = computed(() => backend.value === 'official' && warpMode.value === 'tun');
 
 const apiCall = async (method, url, data = null) => {
   try {
@@ -432,7 +522,6 @@ const toggleConnection = async () => {
 };
 
 const rotateIP = async () => {
-  // Legacy function - kept just in case or we can remove
   isRotating.value = true;
   try {
     const result = await apiCall('post', '/api/rotate');
@@ -443,6 +532,57 @@ const rotateIP = async () => {
     console.error('IP rotation failed:', err);
   } finally {
     isRotating.value = false;
+  }
+};
+
+const switchMode = async (newMode) => {
+  if (warpMode.value === newMode) return;
+  
+  if (!confirm(`Switch to ${newMode.toUpperCase()} mode? This will reconnect WARP.`)) return;
+  
+  isLoading.value = true;
+  try {
+    const result = await apiCall('post', '/api/config/mode', { mode: newMode });
+    if (result && result.success) {
+      console.log('Mode switched to:', newMode);
+      setTimeout(() => {
+        isLoading.value = false;
+      }, 1000);
+    } else {
+      error.value = 'Failed to switch mode';
+      isLoading.value = false;
+    }
+  } catch (err) {
+    console.error('Switch mode failed:', err);
+    error.value = 'Failed to switch mode';
+    isLoading.value = false;
+  }
+};
+
+const toggleProtocol = async () => {
+  if (!canSwitchProtocol.value) return;
+  
+  const newProtocol = protocol.value === 'MASQUE' ? 'wireguard' : 'masque';
+  const displayName = newProtocol === 'wireguard' ? 'WireGuard' : 'MASQUE';
+  
+  if (!confirm(`Switch protocol to ${displayName}? This will reconnect WARP.`)) return;
+  
+  isLoading.value = true;
+  try {
+    const result = await apiCall('post', '/api/config/protocol', { protocol: newProtocol });
+    if (result && result.success) {
+      console.log('Protocol switched to:', newProtocol);
+      setTimeout(() => {
+        isLoading.value = false;
+      }, 1000);
+    } else {
+      error.value = 'Failed to switch protocol';
+      isLoading.value = false;
+    }
+  } catch (err) {
+    console.error('Switch protocol failed:', err);
+    error.value = 'Failed to switch protocol';
+    isLoading.value = false;
   }
 };
 

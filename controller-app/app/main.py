@@ -257,23 +257,71 @@ async def set_endpoint(request: dict):
         raise HTTPException(status_code=501, detail="Backend does not support custom endpoints")
 
 
+@app.post("/api/config/mode")
+async def set_mode(request: dict):
+    """Switch between proxy and TUN mode"""
+    mode = request.get("mode", "").strip().lower()
+
+    if mode not in ("proxy", "tun"):
+        raise HTTPException(status_code=400, detail="Invalid mode. Use 'proxy' or 'tun'")
+
+    controller = WarpController.get_instance()
+
+    if not hasattr(controller, 'set_mode'):
+        raise HTTPException(status_code=501, detail="Backend does not support mode switching")
+
+    success = await run_blocking(controller.set_mode, mode)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to switch mode")
+
+    # Reconnect in new mode
+    connect_success = await run_blocking(controller.connect)
+    status = await run_blocking(controller.get_status)
+
+    return {
+        "success": True,
+        "mode": mode,
+        "connected": connect_success,
+        "status": status,
+    }
+
+
+@app.get("/api/config/mode")
+async def get_mode():
+    """Get current operating mode"""
+    return {
+        "mode": WarpController.get_current_mode(),
+        "backend": WarpController.get_current_backend(),
+    }
+
+
 @app.post("/api/config/protocol")
 async def set_protocol(request: dict):
-    """Protocol switching disabled; MASQUE-only"""
+    """Set tunnel protocol. WireGuard only available for official backend in TUN mode."""
     protocol = request.get("protocol", "masque").strip().lower() or "masque"
-    if protocol != "masque":
-        raise HTTPException(status_code=400, detail="WireGuard mode has been removed. MASQUE is always enforced")
-        
+
+    if protocol not in ("masque", "wireguard"):
+        raise HTTPException(status_code=400, detail="Invalid protocol. Use 'masque' or 'wireguard'")
+
     controller = WarpController.get_instance()
-    
+
+    # WireGuard validation
+    if protocol == "wireguard":
+        backend = WarpController.get_current_backend()
+        if backend != "official":
+            raise HTTPException(status_code=400, detail="WireGuard is only available with the official backend")
+        if not hasattr(controller, 'mode') or controller.mode != "tun":
+            raise HTTPException(status_code=400, detail="WireGuard is only available in TUN mode")
+
     if hasattr(controller, 'set_protocol'):
-        success = await run_blocking(controller.set_protocol, "masque")
+        success = await run_blocking(controller.set_protocol, protocol)
         if success:
-             return {"success": True, "protocol": "masque"}
+            return {"success": True, "protocol": protocol}
         else:
-             raise HTTPException(status_code=500, detail="Failed to re-apply MASQUE protocol")
+            raise HTTPException(status_code=500, detail="Failed to set protocol")
     else:
-        # Older backends always run MASQUE; acknowledge request
+        if protocol == "wireguard":
+            raise HTTPException(status_code=501, detail="This backend does not support WireGuard")
         return {"success": True, "protocol": "masque"}
 
 

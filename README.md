@@ -29,6 +29,14 @@
   - **`usque` (MASQUE)**: 高性能、轻量级的 Go 实现，连接速度极快，资源占用极低（**默认推荐**）。
   - **`official`**: Cloudflare 官方 Linux 客户端，拥有最强的兼容性和原生特性支持。
 
+- **🌐 双模式运行 (Proxy / TUN)**
+  - **Proxy 模式**: 以 SOCKS5 + HTTP 代理方式工作，外部程序通过代理端口走 WARP 隧道。
+  - **TUN 模式**: 创建 TUN 虚拟网卡，容器内全部流量经 WARP 隧道，同时对外暴露 SOCKS5 和 HTTP 代理端口。
+
+- **🔧 多协议支持 (MASQUE / WireGuard)**
+  - **MASQUE**: 基于 HTTP/3 的现代隧道协议，所有后端和模式均支持。
+  - **WireGuard**: 经典高性能 VPN 协议，仅在 **official 后端 + TUN 模式** 下可用，一键切换。
+
 - **⚡ 极致性能与响应**
   - **零阻塞架构**: 后端采用全异步非阻塞设计，耗时操作均在有限线程池中执行，不会耗尽系统资源。
   - **实时监控**: 基于 WebSocket 推送，秒级响应连接状态变化。
@@ -38,7 +46,7 @@
   基于 Vue 3 + Tailwind CSS v4 构建，全响应式布局，配合丝滑的过渡动画，提供顶级的视觉体验。
 
 - **🛡️ 安全与智能**
-  - **安全代理**: SOCKS5 代理端口默认仅绑定 `127.0.0.1`，防止被外部扫描器滥用流量。
+  - **安全代理**: SOCKS5 / HTTP 代理端口默认仅绑定 `127.0.0.1`，防止被外部扫描器滥用流量。
   - **纯净日志**: 智能屏蔽冗余的底层连接日志，仅展示关键业务信息。
   - **智能 Endpoint 管理**: 支持自定义 Endpoint (IP:PORT)，允许用户指定最优连接节点。
   - **IP 轮换**: 修改 Endpoint 或重连即可获取新 IP。
@@ -70,18 +78,20 @@ services:
     image: crisocean/warppanel:latest
     container_name: warppanel-client
     restart: unless-stopped
-    # privileged: true  # No longer needed for supervisor
+    cap_add:
+      - NET_ADMIN  # Required for TUN mode
     environment:
       - WARP_BACKEND=official # 'usque' (default) or 'official'
+      - WARP_MODE=proxy       # 'proxy' (default) or 'tun'
     devices:
       - /dev/net/tun
     ports:
       - "5173:8000"            # Web UI
       - "127.0.0.1:1080:1080"  # SOCKS5 Proxy (仅本地访问)
+      - "127.0.0.1:8080:8080"  # HTTP Proxy  (仅本地访问)
     volumes:
       - warp_data:/var/lib/cloudflare-warp
       - warp_usque:/var/lib/warp
-      # - /sys/fs/cgroup:/sys/fs/cgroup:rw  # Not needed for supervisor
 
 volumes:
   warp_data:
@@ -119,13 +129,21 @@ docker-compose up --build -d
 2.  **切换内核 (Backend Switching)**
     在右上角菜单中选择 **Usque** 或 **Official**。系统将自动处理旧进程清理、端口释放与新服务启动，全程无需人工干预。
 
-3.  **查看状态**
+3.  **切换模式 (Proxy / TUN)**
+    在右上角模式选择器中切换 **Proxy** 或 **TUN** 模式：
+    - **Proxy**: 轻量代理模式，通过 SOCKS5 (:1080) 和 HTTP (:8080) 代理接入 WARP。
+    - **TUN**: 全隧道模式，创建 TUN 虚拟网卡，容器全流量走 WARP（需 `NET_ADMIN` 权限）。
+
+4.  **切换协议 (MASQUE / WireGuard)**
+    使用 **official 后端 + TUN 模式** 时，点击 Protocol 卡片可在 MASQUE 和 WireGuard 之间切换。
+
+5.  **查看状态**
     连接成功后，卡片将实时显示您的：
     - 🌍 **IP 地址** & **地理位置**
     - 🏢 **ISP 供应商**
-    - 📡 **协议类型**（现已固定为 MASQUE，更稳定）
+    - 📡 **协议类型** (MASQUE / WireGuard)
 
-4.  **自定义 Endpoint**
+6.  **自定义 Endpoint**
     在底部的输入框中填写您优选的 WARP Endpoint (格式 `IP:PORT`)，点击 **APPLY** 即可生效。留空并点击 **APPLY** 可重置为默认。
 
 5.  **查看日志**
@@ -133,16 +151,16 @@ docker-compose up --build -d
 
 ## 🔒 远程部署安全提示
 
-> **重要**：SOCKS5 代理端口默认绑定 `127.0.0.1`，仅允许本机访问，防止开放代理被恶意扫描器滥用消耗流量。
+> **重要**：SOCKS5 和 HTTP 代理端口默认绑定 `127.0.0.1`，仅允许本机访问，防止开放代理被恶意扫描器滥用消耗流量。
 
 如需从其他机器远程使用代理，请通过 **SSH 隧道** 安全转发：
 
 ```bash
-ssh -L 1080:127.0.0.1:1080 your-server-ip
-# 然后在本地使用 socks5://127.0.0.1:1080 即可
+ssh -L 1080:127.0.0.1:1080 -L 8080:127.0.0.1:8080 your-server-ip
+# 然后在本地使用 socks5://127.0.0.1:1080 或 http://127.0.0.1:8080 即可
 ```
 
-如确实需要对外暴露（不推荐），可将 `docker-compose.yml` 中的端口改为 `"1080:1080"`。
+如确实需要对外暴露（不推荐），可将 `docker-compose.yml` 中的端口改为 `"1080:1080"` 和 `"8080:8080"`。
 
 ## 💻 开发指南
 

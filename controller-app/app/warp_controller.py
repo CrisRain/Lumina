@@ -97,7 +97,14 @@ class WarpController:
     def get_current_backend(cls) -> str:
         """Get the name of the current backend"""
         return cls._current_backend or os.getenv("WARP_BACKEND", "usque")
-    
+
+    @classmethod
+    def get_current_mode(cls) -> str:
+        """Get the current operating mode (proxy/tun)"""
+        if cls._instance and hasattr(cls._instance, 'mode'):
+            return cls._instance.mode
+        return os.getenv("WARP_MODE", "proxy")
+
     @classmethod
     def reset(cls):
         """Reset the controller instance"""
