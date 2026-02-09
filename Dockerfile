@@ -47,9 +47,14 @@ COPY --from=gost-download /tmp/gost /usr/local/bin/gost
 # Setup Python App
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1
+ENV WARP_DATA_DIR=/app/data
 COPY controller-app/requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 RUN pip3 install uvicorn psutil
+
+# Create data directories
+RUN mkdir -p /app/data/kernels
+RUN mkdir -p /var/lib/warp
 
 # Copy Backend Code
 COPY controller-app/app /app/app

@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 import os
 
 from .warp_controller import WarpController
+from .kernel_version_manager import KernelVersionManager
 
 # Configuration
 SOCKS5_PORT = 1080
@@ -123,6 +124,23 @@ async def init_controller():
     asyncio.create_task(connect_in_background(controller))
     # Start shared status broadcaster
     asyncio.create_task(status_broadcast_loop())
+    
+    # Start Auto-Update Check
+    asyncio.create_task(auto_update_task())
+
+async def auto_update_task():
+    """Check for kernel updates in background"""
+    # First ensure we have a version managed (adopt system install if needed)
+    try:
+        await run_blocking(KernelVersionManager.get_instance().adopt_system_installation, "usque")
+    except Exception as e:
+        logger.warning(f"Failed to adopt system installation: {e}")
+
+    logger.info("Running kernel auto-update check...")
+    try:
+        await run_blocking(KernelVersionManager.get_instance().auto_update, "usque")
+    except Exception as e:
+        logger.error(f"Auto-update failed: {e}")
 
 async def connect_in_background(controller):
     logger.info("Starting WARP backend (background)...")
@@ -147,16 +165,23 @@ async def status_broadcast_loop(interval: float = 10.0):
             await asyncio.sleep(interval)
 
 # Serve Frontend
-# We assume the frontend build is copied to /app/static in the Docker image
-if os.path.exists("/app/static"):
-    app.mount("/assets", StaticFiles(directory="/app/static/assets"), name="assets")
+# Determine static directory
+STATIC_DIR = os.getenv("STATIC_DIR", "/app/static")
+if not os.path.exists(STATIC_DIR):
+    # Try relative path for local development
+    local_static = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
+    if os.path.exists(local_static):
+        STATIC_DIR = local_static
+
+if os.path.exists(STATIC_DIR):
+    app.mount("/assets", StaticFiles(directory=f"{STATIC_DIR}/assets"), name="assets")
 
     @app.get("/")
     async def read_index():
-        return FileResponse('/app/static/index.html')
+        return FileResponse(f'{STATIC_DIR}/index.html')
 
 else:
-    logger.warning("Static files directory /app/static not found. Frontend will not be served.")
+    logger.warning(f"Static files directory {STATIC_DIR} not found. Frontend will not be served.")
 
 # Helper for running blocking functions (uses bounded thread pool)
 async def run_blocking(func, *args):
@@ -308,11 +333,26 @@ async def set_mode(request: dict):
 async def get_mode():
     """Get current operating mode and configuration"""
     controller = WarpController.get_instance()
+    
+    # Check if running in Docker
+    is_docker = False
+    if os.path.exists('/.dockerenv'):
+        is_docker = True
+    else:
+        # Fallback check
+        try:
+            with open('/proc/self/cgroup', 'r') as f:
+                if 'docker' in f.read():
+                    is_docker = True
+        except:
+            pass
+
     return {
         "mode": WarpController.get_current_mode(),
         "backend": WarpController.get_current_backend(),
         "protocol": getattr(controller, 'preferred_protocol', 'masque'),
         "connected": await run_blocking(controller.is_connected) if hasattr(controller, 'is_connected') else False,
+        "is_docker": is_docker
     }
 
 
@@ -374,6 +414,94 @@ async def set_protocol(request: dict):
         if protocol == "wireguard":
             raise HTTPException(status_code=501, detail="This backend does not support WireGuard")
         return {"success": True, "protocol": "masque", "backend": backend}
+
+
+@app.get("/api/kernel/versions")
+async def get_kernel_versions(backend: str = None):
+    """List available versions for the specified backend (or current backend)"""
+    if not backend:
+        backend = WarpController.get_current_backend()
+        
+    versions = await run_blocking(KernelVersionManager.get_instance().list_versions, backend)
+    # Get current active version (configured)
+    current_active = await run_blocking(KernelVersionManager.get_instance().get_active_version, backend)
+    
+    # Get detailed info (installed version, latest version)
+    info = await run_blocking(KernelVersionManager.get_instance().get_installed_version_info, backend)
+    
+    return {
+        "backend": backend,
+        "versions": versions,
+        "current": current_active,
+        "installed_version": info.get("version"),
+        "latest_version": info.get("latest_version"),
+        "update_available": info.get("update_available")
+    }
+
+@app.post("/api/kernel/check-update")
+async def check_update(request: dict):
+    """Manually check for updates"""
+    backend = request.get("backend", "usque")
+    logger.info(f"Checking for updates for {backend}...")
+    
+    latest = await run_blocking(KernelVersionManager.get_instance().check_for_updates, backend)
+    
+    if latest:
+        return {"success": True, "latest_version": latest}
+    return {"success": False, "message": "No update found or check failed"}
+
+@app.post("/api/kernel/update")
+async def perform_update(request: dict):
+    """Perform update to latest version"""
+    backend = request.get("backend", "usque")
+    
+    logger.info(f"Triggering manual update for {backend}...")
+    updated = await run_blocking(KernelVersionManager.get_instance().auto_update, backend)
+    
+    if updated:
+         # Restart if successful
+         controller = WarpController.get_instance()
+         await run_blocking(controller.disconnect)
+         await asyncio.sleep(1)
+         await run_blocking(controller.connect)
+         return {"success": True, "message": "Updated and restarted"}
+    else:
+         return {"success": False, "message": "Update failed or already up to date"}
+
+@app.post("/api/kernel/version")
+async def set_kernel_version(request: dict):
+    """Set the active version for a backend"""
+    backend = request.get("backend")
+    version = request.get("version")
+    
+    if not backend or not version:
+        raise HTTPException(status_code=400, detail="Missing backend or version")
+        
+    # If backend is not specified, use current, but user should specify
+    # Actually, we should allow setting version for non-active backend too
+    
+    success = await run_blocking(KernelVersionManager.get_instance().set_active_version, backend, version)
+    
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to set version (invalid version or backend)")
+        
+    # If we updated the currently running backend, we should restart it
+    current_backend = WarpController.get_current_backend()
+    if backend == current_backend:
+        logger.info(f"Version changed for active backend {backend}, restarting...")
+        controller = WarpController.get_instance()
+        await run_blocking(controller.disconnect)
+        # Re-connect will pick up new binary path (via symlink or direct call)
+        # Note: if it's usque, connect() -> initialize() -> checks config path -> uses new binary
+        # For supervisor, we updated the symlink, so it should pick it up
+        await asyncio.sleep(1)
+        await run_blocking(controller.connect)
+        
+    return {
+        "success": True,
+        "backend": backend,
+        "version": version
+    }
 
 
 @app.get("/api/logs")
@@ -450,8 +578,8 @@ async def serve_spa(full_path: str):
          raise HTTPException(status_code=404)
     
     # Check if file exists in static/assets (handled by mount, but just in case)
-    if os.path.exists(f"/app/static/{full_path}"):
-        return FileResponse(f"/app/static/{full_path}")
+    if os.path.exists(f"{STATIC_DIR}/{full_path}"):
+        return FileResponse(f"{STATIC_DIR}/{full_path}")
         
-    return FileResponse('/app/static/index.html')
+    return FileResponse(f'{STATIC_DIR}/index.html')
 

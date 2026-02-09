@@ -10,10 +10,13 @@ import time
 import json
 import os
 from typing import Optional, Dict
+from .kernel_version_manager import KernelVersionManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+from .linux_tun_manager import LinuxTunManager
 
 class UsqueController:
     """Control usque MASQUE WARP client (proxy + TUN modes)"""
@@ -23,8 +26,8 @@ class UsqueController:
     _status_cache_time = 0
     _STATUS_CACHE_TTL = 8  # seconds
 
-    def __init__(self, config_path="/var/lib/warp/config.json", socks5_port=1080, http_port=8080):
-        self.config_path = config_path
+    def __init__(self, config_path=None, socks5_port=1080, http_port=8080):
+        self.config_path = config_path or os.getenv("USQUE_CONFIG_PATH", "/var/lib/warp/config.json")
         self.socks5_port = socks5_port
         self.http_port = http_port
         self.process: Optional[subprocess.Popen] = None
@@ -32,6 +35,12 @@ class UsqueController:
         self._cache_time: float = 0
         self._cache_ttl: float = 120  # Cache IP info for 120 seconds
         self._mode = os.getenv("WARP_MODE", "proxy")  # 'proxy' or 'tun'
+        
+        # TUN State
+        self._tun_manager = LinuxTunManager()
+        self._saved_gw = None
+        self._saved_iface = None
+        self._saved_ip = None
 
     # ------------------------------------------------------------------
     # Mode management
@@ -46,6 +55,12 @@ class UsqueController:
         if mode not in ("proxy", "tun"):
             logger.error(f"Invalid mode: {mode}. Use 'proxy' or 'tun'")
             return False
+        
+        # Docker restriction for TUN mode
+        if mode == "tun" and self._tun_manager.is_docker():
+            logger.error("TUN mode is not allowed inside Docker environment")
+            return False
+
         if mode == self._mode:
             logger.info(f"Already in {mode} mode")
             return True
@@ -70,8 +85,10 @@ class UsqueController:
 
             if not os.path.exists(self.config_path):
                 logger.info("Config not found, registering new usque account...")
+                
+                binary_path = KernelVersionManager.get_instance().get_binary_path('usque')
                 process = subprocess.Popen(
-                    ["usque", "register"],
+                    [binary_path, "register"],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -135,6 +152,11 @@ class UsqueController:
 
     def _connect_tun(self) -> bool:
         """Start usque nativetun + set up routing + start gost proxy listeners."""
+        # Linux only check
+        if os.name != 'posix':
+             logger.error("TUN mode is only supported on Linux/Unix systems")
+             return False
+
         try:
             logger.info("Starting usque service (TUN mode: nativetun)...")
             # Ensure clean state
@@ -144,14 +166,14 @@ class UsqueController:
             time.sleep(0.5)
 
             # Save original default route before TUN modifies anything
-            orig_gw, orig_iface, orig_ip = self._get_default_route()
+            self._saved_gw, self._saved_iface, self._saved_ip = self._tun_manager.get_default_route()
 
             # Start usque nativetun (creates tun0 interface)
             subprocess.run(["supervisorctl", "start", "usque-tun"], check=True)
 
             logger.info("Waiting for TUN interface to come up...")
             for _ in range(20):
-                if self._tun_interface_exists():
+                if self._tun_manager.tun_interface_exists():
                     break
                 time.sleep(1)
             else:
@@ -159,21 +181,24 @@ class UsqueController:
                 return False
 
             # Set up routing with policy-based split
-            self._setup_tun_routing(orig_gw, orig_iface, orig_ip)
+            self._setup_tun_routing()
 
             # Start gost as plain SOCKS5 + HTTP listener;
             # since default route is now through tun0, traffic goes through WARP
-            logger.info("Starting tun-proxy (gost SOCKS5 + HTTP)...")
-            subprocess.run(["supervisorctl", "start", "tun-proxy"], check=True)
+            # logger.info("Starting tun-proxy (gost SOCKS5 + HTTP)...")
+            # subprocess.run(["supervisorctl", "start", "tun-proxy"], check=True)
 
-            for _ in range(10):
-                if self._is_port_open(self.socks5_port):
-                    logger.info("usque TUN mode started successfully")
-                    return True
-                time.sleep(1)
+            logger.info("usque TUN mode started successfully (Proxy listeners disabled)")
+            return True
 
-            logger.error("tun-proxy failed to start (timeout)")
-            return False
+            # for _ in range(10):
+            #     if self._is_port_open(self.socks5_port):
+            #         logger.info("usque TUN mode started successfully")
+            #         return True
+            #     time.sleep(1)
+
+            # logger.error("tun-proxy failed to start (timeout)")
+            # return False
         except Exception as e:
             logger.error(f"Failed to start usque TUN: {e}")
             return False
@@ -217,72 +242,8 @@ class UsqueController:
             logger.warning(f"Failed to start HTTP proxy: {e}")
 
     # ------------------------------------------------------------------
-    # TUN routing helpers
+    # TUN routing helpers (Delegated to LinuxTunManager)
     # ------------------------------------------------------------------
-
-    def _get_default_route(self):
-        """Get original default gateway, interface, and container IP."""
-        gw, iface, ip = None, None, None
-        try:
-            result = subprocess.run(
-                ["ip", "route", "show", "default"],
-                capture_output=True, text=True, timeout=5,
-            )
-            line = result.stdout.strip().split('\n')[0]
-            parts = line.split()
-            if 'via' in parts and 'dev' in parts:
-                gw = parts[parts.index('via') + 1]
-                iface = parts[parts.index('dev') + 1]
-        except Exception as e:
-            logger.warning(f"Could not get default route: {e}")
-            return None, None, None
-
-        # Get primary IP on that interface
-        if iface:
-            try:
-                result = subprocess.run(
-                    ["ip", "-4", "-o", "addr", "show", "dev", iface],
-                    capture_output=True, text=True, timeout=5,
-                )
-                for line in result.stdout.strip().split('\n'):
-                    if 'inet ' in line:
-                        # Format: "N: eth0  inet 172.18.0.2/16 ..."
-                        ip = line.split('inet ')[1].split('/')[0]
-                        break
-            except Exception:
-                pass
-
-        if gw and iface:
-            logger.info(f"Original default route: via {gw} dev {iface}, IP {ip}")
-        return gw, iface, ip
-
-    def _tun_interface_exists(self) -> bool:
-        """Check if a tun interface (tun0, tun1, ...) exists."""
-        try:
-            result = subprocess.run(
-                ["ip", "link", "show", "type", "tun"],
-                capture_output=True, text=True, timeout=5,
-            )
-            return "tun" in result.stdout
-        except Exception:
-            return False
-
-    def _get_tun_interface_name(self) -> Optional[str]:
-        """Get the name of the first tun interface."""
-        try:
-            result = subprocess.run(
-                ["ip", "-o", "link", "show", "type", "tun"],
-                capture_output=True, text=True, timeout=5,
-            )
-            for line in result.stdout.strip().split('\n'):
-                if line.strip():
-                    # Format: "N: tunX: ..."
-                    parts = line.split(':')
-                    if len(parts) >= 2:
-                        return parts[1].strip()
-        except Exception:
-            pass
-        return None
 
     def _get_warp_endpoint(self) -> Optional[str]:
         """Read endpoint_v4 from usque config.json."""
@@ -295,88 +256,39 @@ class UsqueController:
             logger.warning(f"Could not read endpoint from config: {e}")
         return None
 
-    def _setup_tun_routing(self, orig_gw: Optional[str], orig_iface: Optional[str], orig_ip: Optional[str]):
-        """Set up policy-based routing for usque nativetun.
-
-        Strategy:
-        1. Create routing table 100 with original default gateway
-        2. Add ip rule: traffic from container's own IP uses table 100
-           (ensures panel/proxy response traffic bypasses the TUN)
-        3. Route the WARP endpoint through original gateway (prevent loop)
-        4. Set default route through tun interface (all other traffic → WARP)
-        """
-        tun_name = self._get_tun_interface_name() or "tun0"
+    def _setup_tun_routing(self):
+        """Set up policy-based routing for usque nativetun."""
+        tun_name = self._tun_manager.get_tun_interface_name() or "tun0"
         endpoint = self._get_warp_endpoint()
 
         # 1. Policy routing: response traffic from our IP uses original gateway
-        if orig_gw and orig_iface and orig_ip:
-            logger.info(f"Setting up policy route: from {orig_ip} → table 100 via {orig_gw} dev {orig_iface}")
-            subprocess.run(
-                f"ip route add default via {orig_gw} dev {orig_iface} table 100",
-                shell=True, check=False,
-            )
-            # Copy connected-subnet routes so ARP works in table 100
-            res = subprocess.run(
-                f"ip route show dev {orig_iface} scope link",
-                capture_output=True, text=True, shell=True,
-            )
-            for line in res.stdout.strip().split('\n'):
-                subnet = line.split()[0] if line.strip() else None
-                if subnet:
-                    subprocess.run(
-                        f"ip route add {subnet} dev {orig_iface} table 100",
-                        shell=True, check=False,
-                    )
-            # Remove stale rule, then add
-            subprocess.run(f"ip rule del from {orig_ip} lookup 100 2>/dev/null", shell=True, check=False)
-            subprocess.run(f"ip rule add from {orig_ip} lookup 100", shell=True, check=False)
+        if self._saved_gw and self._saved_iface and self._saved_ip:
+            self._tun_manager.setup_bypass_routing(self._saved_gw, self._saved_iface, self._saved_ip)
         else:
             logger.warning("Missing orig_gw/iface/ip, skipping policy route (panel may be inaccessible in TUN mode)")
 
         # 2. Route WARP endpoint through original gateway (prevent routing loop)
-        if orig_gw and orig_iface and endpoint:
-            logger.info(f"Routing WARP endpoint {endpoint} via {orig_gw} dev {orig_iface}")
-            subprocess.run(
-                f"ip route add {endpoint}/32 via {orig_gw} dev {orig_iface}",
-                shell=True, check=False,
-            )
+        if self._saved_gw and self._saved_iface and endpoint:
+            self._tun_manager.add_static_route(f"{endpoint}/32", self._saved_gw, self._saved_iface)
 
         # 3. Set default route through TUN
-        subprocess.run(
-            f"ip route replace default dev {tun_name}",
-            shell=True, check=False,
-        )
-        logger.info(f"TUN routing configured: default via {tun_name}, policy from {orig_ip} via table 100")
+        self._tun_manager.set_default_interface(tun_name)
+        logger.info(f"TUN routing configured: default via {tun_name}")
 
     def _cleanup_tun_routing(self):
         """Remove TUN routing: policy rule, table 100, endpoint route."""
-        try:
-            # Remove ip rule for container IP
-            result = subprocess.run(
-                "ip rule show", shell=True,
-                capture_output=True, text=True,
-            )
-            for line in result.stdout.strip().split('\n'):
-                if 'lookup 100' in line:
-                    # Extract "from X.X.X.X"
-                    parts = line.split()
-                    if 'from' in parts:
-                        ip = parts[parts.index('from') + 1]
-                        subprocess.run(f"ip rule del from {ip} lookup 100", shell=True, check=False)
+        # Cleanup bypass routing
+        self._tun_manager.cleanup_bypass_routing(self._saved_ip)
 
-            # Flush table 100
-            subprocess.run("ip route flush table 100 2>/dev/null", shell=True, check=False)
-
-            # Remove endpoint route
-            endpoint = self._get_warp_endpoint()
-            if endpoint:
-                subprocess.run(
-                    f"ip route del {endpoint}/32 2>/dev/null",
-                    shell=True, check=False,
-                )
-            # Default route will be restored automatically when tun goes down
-        except Exception:
-            pass
+        # Remove endpoint route
+        endpoint = self._get_warp_endpoint()
+        if endpoint:
+            self._tun_manager.delete_static_route(f"{endpoint}/32")
+        
+        # Reset saved state
+        self._saved_gw = None
+        self._saved_iface = None
+        self._saved_ip = None
 
     # ------------------------------------------------------------------
     # Connectivity checks
@@ -417,12 +329,13 @@ class UsqueController:
                 return False
         except Exception:
             return False
-        return self._tun_interface_exists()
+        return self._tun_manager.tun_interface_exists()
 
     def is_connected(self) -> bool:
         """Check if usque is running in current mode"""
         if self._mode == "tun":
-            return self._is_tun_connected()
+            # Just check tun interface exists, no proxy port check
+            return self._tun_manager.tun_interface_exists()
         return self._is_proxy_connected()
 
     # ------------------------------------------------------------------
@@ -488,41 +401,69 @@ class UsqueController:
 
     def _fetch_ip_info(self) -> Optional[Dict]:
         """Fetch IP info. Proxy mode: via SOCKS5. TUN mode: direct (traffic goes through tun)."""
-        try:
-            if self._mode == "tun":
-                cmd = [
-                    "curl", "-s", "--max-time", "5",
-                    "http://ip-api.com/json/?fields=status,message,query,country,city,isp",
-                ]
-            else:
-                cmd = [
-                    "curl",
-                    "-x", f"socks5h://127.0.0.1:{self.socks5_port}",
-                    "-s", "--max-time", "5",
-                    "http://ip-api.com/json/?fields=status,message,query,country,city,isp",
-                ]
+        
+        # Try primary API first (ip-api.com)
+        apis = [
+            "http://ip-api.com/json/?fields=status,message,query,country,city,isp",
+            "https://ipinfo.io/json",
+            "https://ifconfig.me/all.json"
+        ]
+        
+        for api_url in apis:
+            try:
+                cmd = ["curl", "-s", "--max-time", "5"]
+                
+                # Proxy configuration
+                if self._mode == "proxy":
+                     cmd.extend(["-x", f"socks5h://127.0.0.1:{self.socks5_port}"])
+                
+                cmd.append(api_url)
+                
+                logger.info(f"Fetching IP info from {api_url}...")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
-
-            if result.returncode == 0 and result.stdout:
-                data = json.loads(result.stdout)
-                if data.get("status") == "success":
-                    isp_value = data.get("isp") or "Cloudflare WARP"
-                    return {
-                        "ip": data.get("query") or "Unknown",
-                        "country": data.get("country") or "Unknown",
-                        "city": data.get("city") or "Unknown",
-                        "location": data.get("country") or "Unknown",
-                        "isp": isp_value,
-                        "details": {"isp": isp_value},
-                    }
-                else:
-                    logger.warning("IP API returned failure: %s", data.get("message"))
-        except subprocess.TimeoutExpired:
-            logger.warning("Timeout getting IP info")
-        except Exception as e:
-            logger.error(f"Error getting IP info: {e}")
-
+                if result.returncode == 0 and result.stdout:
+                    # Try to parse as JSON
+                    try:
+                        data = json.loads(result.stdout)
+                        
+                        # Normalize data structure based on API
+                        if "ip-api.com" in api_url:
+                            if data.get("status") == "success":
+                                isp_value = data.get("isp") or "Cloudflare WARP"
+                                return {
+                                    "ip": data.get("query") or "Unknown",
+                                    "country": data.get("country") or "Unknown",
+                                    "city": data.get("city") or "Unknown",
+                                    "location": data.get("country") or "Unknown",
+                                    "isp": isp_value,
+                                    "details": {"isp": isp_value},
+                                }
+                        elif "ipinfo.io" in api_url:
+                            return {
+                                "ip": data.get("ip") or "Unknown",
+                                "country": data.get("country") or "Unknown",
+                                "city": data.get("city") or "Unknown",
+                                "location": data.get("country") or "Unknown",
+                                "isp": data.get("org") or "Cloudflare WARP",
+                                "details": {"isp": data.get("org")},
+                            }
+                        elif "ifconfig.me" in api_url:
+                             return {
+                                "ip": data.get("ip_addr") or "Unknown",
+                                "country": "Unknown", # ifconfig.me doesn't give country in json easily?
+                                "city": "Unknown",
+                                "location": "Unknown",
+                                "isp": "Cloudflare WARP",
+                                "details": {},
+                            }
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse JSON from {api_url}: {result.stdout[:100]}")
+                        
+            except Exception as e:
+                logger.warning(f"Error fetching IP from {api_url}: {e}")
+                
+        logger.error("All IP fetch attempts failed")
         return None
 
     # ------------------------------------------------------------------
