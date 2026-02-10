@@ -420,6 +420,10 @@ class OfficialController:
 
     async def _cleanup_tun_routing(self):
         """Remove policy routing rules, table 100, iptables connmark, and nftables rules."""
+        # Clean up nftables rules first
+        if self._saved_interface:
+            await self._tun_manager.cleanup_nftables_rules(self._saved_interface, [8000])
+        
         # Clean up bypass routing
         await self._tun_manager.cleanup_bypass_routing(self._saved_ip)
         logger.info("TUN routing cleanup complete")

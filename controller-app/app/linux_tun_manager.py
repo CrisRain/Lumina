@@ -224,12 +224,76 @@ class LinuxTunManager:
 
         logger.info(f"Adding allow rules for {interface} on ports {ports}")
         try:
-            # Allow Output
-            await cls._run_command(f"nft insert rule inet cloudflare-warp output oif \"{interface}\" accept 2>/dev/null")
-            
-            # Allow Input on specific ports
+            # Delete existing rules first to avoid duplicates (idempotency)
+            await cls._run_command(f"nft delete rule inet cloudflare-warp output oif \"{interface}\" accept 2>/dev/null")
             for port in ports:
-                await cls._run_command(f"nft insert rule inet cloudflare-warp input iif \"{interface}\" tcp dport {port} accept 2>/dev/null")
+                await cls._run_command(f"nft delete rule inet cloudflare-warp input iif \"{interface}\" tcp dport {port} accept 2>/dev/null")
+                await cls._run_command(f"nft delete rule inet cloudflare-warp input iif \"{interface}\" udp dport {port} accept 2>/dev/null")
+            
+            # Allow Output (add to end of chain)
+            rc, stdout, stderr = await cls._run_command(f"nft add rule inet cloudflare-warp output oif \"{interface}\" accept")
+            if rc != 0:
+                logger.error(f"Failed to add nftables output rule: {stderr}")
+                raise RuntimeError(f"nftables output rule failed: {stderr}")
+            logger.info(f"Added nftables output rule for {interface}")
+            
+            # Allow Input on specific ports (both TCP and UDP)
+            for port in ports:
+                # TCP rule
+                rc, stdout, stderr = await cls._run_command(f"nft add rule inet cloudflare-warp input iif \"{interface}\" tcp dport {port} accept")
+                if rc != 0:
+                    logger.error(f"Failed to add nftables TCP input rule for port {port}: {stderr}")
+                    raise RuntimeError(f"nftables TCP input rule failed for port {port}: {stderr}")
+                logger.info(f"Added nftables TCP input rule for {interface}:{port}")
+                
+                # UDP rule
+                rc, stdout, stderr = await cls._run_command(f"nft add rule inet cloudflare-warp input iif \"{interface}\" udp dport {port} accept")
+                if rc != 0:
+                    logger.error(f"Failed to add nftables UDP input rule for port {port}: {stderr}")
+                    raise RuntimeError(f"nftables UDP input rule failed for port {port}: {stderr}")
+                logger.info(f"Added nftables UDP input rule for {interface}:{port}")
+                
         except Exception as e:
             logger.error(f"Failed to apply nftables rules: {e}")
+            raise
+
+    @classmethod
+    async def cleanup_nftables_rules(cls, interface: str, ports: list[int]):
+        """
+        Remove nftables rules for the specified interface and ports.
+        Used during cleanup when disconnecting from TUN mode.
+        """
+        if not shutil.which("nft"):
+            logger.warning("nft command not found, skipping nftables cleanup")
+            return
+
+        logger.info(f"Cleaning up nftables rules for {interface} on ports {ports}")
+        
+        # Check if table exists
+        rc, _, _ = await cls._run_command("nft list table inet cloudflare-warp 2>/dev/null")
+        if rc != 0:
+            logger.info("WARP nftables table not found, skipping cleanup")
+            return
+        
+        try:
+            # Delete output rule (ignore errors if rule doesn't exist)
+            rc, stdout, stderr = await cls._run_command(f"nft delete rule inet cloudflare-warp output oif \"{interface}\" accept 2>/dev/null")
+            if rc == 0:
+                logger.info(f"Removed nftables output rule for {interface}")
+            
+            # Delete input rules for each port (both TCP and UDP)
+            for port in ports:
+                # TCP rule
+                rc, stdout, stderr = await cls._run_command(f"nft delete rule inet cloudflare-warp input iif \"{interface}\" tcp dport {port} accept 2>/dev/null")
+                if rc == 0:
+                    logger.info(f"Removed nftables TCP input rule for {interface}:{port}")
+                
+                # UDP rule
+                rc, stdout, stderr = await cls._run_command(f"nft delete rule inet cloudflare-warp input iif \"{interface}\" udp dport {port} accept 2>/dev/null")
+                if rc == 0:
+                    logger.info(f"Removed nftables UDP input rule for {interface}:{port}")
+            
+            logger.info("nftables rules cleanup complete")
+        except Exception as e:
+            logger.error(f"Error during nftables cleanup: {e}")
 
