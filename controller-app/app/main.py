@@ -42,11 +42,21 @@ class LogCollector(logging.Handler):
         self._loop = loop
     
     def emit(self, record):
+        # Get the raw message
+        msg = record.getMessage()
+        
+        # Append exception info if available
+        if record.exc_info:
+            if not record.exc_text:
+                record.exc_text = self.formatter.formatException(record.exc_info)
+            if record.exc_text:
+                msg = f"{msg}\n{record.exc_text}"
+
         log_entry = {
             'timestamp': datetime.fromtimestamp(record.created).strftime('%H:%M:%S'),
             'level': record.levelname,
             'logger': record.name,
-            'message': self.format(record)
+            'message': msg
         }
         self.logs.append(log_entry)
         self._pending_logs.append(log_entry)
@@ -144,8 +154,7 @@ async def auto_update_task():
 
 async def connect_in_background(controller):
     logger.info("Starting WARP backend (background)...")
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, controller.connect)
+    await controller.connect()
 
 async def status_broadcast_loop(interval: float = 10.0):
     """Periodically broadcast status to all connected clients.
@@ -155,7 +164,7 @@ async def status_broadcast_loop(interval: float = 10.0):
     while True:
         try:
             if manager.active_connections:
-                status = await run_blocking(WarpController.get_instance().get_status)
+                status = await WarpController.get_instance().get_status()
                 await manager.broadcast({"type": "status", "data": status})
                 await asyncio.sleep(interval)
             else:
@@ -190,17 +199,17 @@ async def run_blocking(func, *args):
 
 @app.get("/api/status")
 async def get_status():
-    return await run_blocking(WarpController.get_instance().get_status)
+    return await WarpController.get_instance().get_status()
 
 @app.get("/api/backend/current")
 async def get_current_backend():
     """Get current backend type"""
     controller = WarpController.get_instance()
-    backend = await run_blocking(WarpController.get_current_backend)
+    backend = WarpController.get_current_backend()
     
     is_connected = False
     if hasattr(controller, 'is_connected'):
-        is_connected = await run_blocking(controller.is_connected)
+        is_connected = await controller.is_connected()
         
     return {
         "backend": backend,
@@ -222,12 +231,12 @@ async def switch_backend(request: dict):
     
     try:
         # Switch backend using factory
-        controller = await run_blocking(WarpController.switch_backend, new_backend)
+        controller = await WarpController.switch_backend(new_backend)
         
         # Try to connect with new backend
         logger.info(f"API: Connecting with new backend {new_backend}...")
-        connect_success = await run_blocking(controller.connect)
-        status = await run_blocking(controller.get_status)
+        connect_success = await controller.connect()
+        status = await controller.get_status()
         
         return {
             "success": True, 
@@ -245,18 +254,18 @@ async def switch_backend(request: dict):
 @app.post("/api/connect")
 async def connect():
     controller = WarpController.get_instance()
-    success = await run_blocking(controller.connect)
+    success = await controller.connect()
     if not success:
         raise HTTPException(status_code=500, detail="Failed to connect WARP")
-    return await run_blocking(controller.get_status)
+    return await controller.get_status()
 
 @app.post("/api/disconnect")
 async def disconnect():
     controller = WarpController.get_instance()
-    success = await run_blocking(controller.disconnect)
+    success = await controller.disconnect()
     if not success:
         raise HTTPException(status_code=500, detail="Failed to disconnect WARP")
-    return await run_blocking(controller.get_status)
+    return await controller.get_status()
 
 @app.post("/api/rotate")
 async def rotate_ip():
@@ -267,17 +276,17 @@ async def rotate_ip():
     
     # Use built-in rotate if available
     if hasattr(controller, 'rotate_ip_simple'):
-        success = await run_blocking(controller.rotate_ip_simple)
+        success = await controller.rotate_ip_simple()
     else:
         # Fallback manual rotation
-        await run_blocking(controller.disconnect)
+        await controller.disconnect()
         await asyncio.sleep(1)
-        success = await run_blocking(controller.connect)
+        success = await controller.connect()
     
     if not success:
         raise HTTPException(status_code=500, detail="Failed to rotate (reconnect failed)")
     
-    return await run_blocking(controller.get_status)
+    return await controller.get_status()
 
 @app.post("/api/config/endpoint")
 async def set_endpoint(request: dict):
@@ -286,7 +295,7 @@ async def set_endpoint(request: dict):
     controller = WarpController.get_instance()
     
     if hasattr(controller, 'set_custom_endpoint'):
-        success = await run_blocking(controller.set_custom_endpoint, endpoint)
+        success = await controller.set_custom_endpoint(endpoint)
         if success:
              return {"success": True, "endpoint": endpoint}
         else:
@@ -311,14 +320,14 @@ async def set_mode(request: dict):
 
     logger.info(f"API: Switching mode from {previous_mode} to {mode}")
     
-    success = await run_blocking(controller.set_mode, mode)
+    success = await controller.set_mode(mode)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to switch mode")
 
     # Reconnect in new mode
     logger.info(f"API: Connecting in {mode} mode...")
-    connect_success = await run_blocking(controller.connect)
-    status = await run_blocking(controller.get_status)
+    connect_success = await controller.connect()
+    status = await controller.get_status()
 
     return {
         "success": True,
@@ -351,7 +360,7 @@ async def get_mode():
         "mode": WarpController.get_current_mode(),
         "backend": WarpController.get_current_backend(),
         "protocol": getattr(controller, 'preferred_protocol', 'masque'),
-        "connected": await run_blocking(controller.is_connected) if hasattr(controller, 'is_connected') else False,
+        "connected": await controller.is_connected() if hasattr(controller, 'is_connected') else False,
         "is_docker": is_docker
     }
 
@@ -397,9 +406,9 @@ async def set_protocol(request: dict):
     logger.info(f"API: Switching protocol from {previous_protocol} to {protocol}")
 
     if hasattr(controller, 'set_protocol'):
-        success = await run_blocking(controller.set_protocol, protocol)
+        success = await controller.set_protocol(protocol)
         if success:
-            status = await run_blocking(controller.get_status)
+            status = await controller.get_status()
             return {
                 "success": True, 
                 "previous_protocol": previous_protocol,
@@ -461,9 +470,9 @@ async def perform_update(request: dict):
     if updated:
          # Restart if successful
          controller = WarpController.get_instance()
-         await run_blocking(controller.disconnect)
+         await controller.disconnect()
          await asyncio.sleep(1)
-         await run_blocking(controller.connect)
+         await controller.connect()
          return {"success": True, "message": "Updated and restarted"}
     else:
          return {"success": False, "message": "Update failed or already up to date"}
@@ -490,12 +499,12 @@ async def set_kernel_version(request: dict):
     if backend == current_backend:
         logger.info(f"Version changed for active backend {backend}, restarting...")
         controller = WarpController.get_instance()
-        await run_blocking(controller.disconnect)
+        await controller.disconnect()
         # Re-connect will pick up new binary path (via symlink or direct call)
         # Note: if it's usque, connect() -> initialize() -> checks config path -> uses new binary
         # For supervisor, we updated the symlink, so it should pick it up
         await asyncio.sleep(1)
-        await run_blocking(controller.connect)
+        await controller.connect()
         
     return {
         "success": True,
@@ -551,7 +560,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         # Send initial status
-        initial_status = await run_blocking(WarpController.get_instance().get_status)
+        initial_status = await WarpController.get_instance().get_status()
         await websocket.send_json({"type": "status", "data": initial_status})
         
         # Keep connection alive without per-connection polling

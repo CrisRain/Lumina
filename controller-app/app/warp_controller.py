@@ -5,6 +5,7 @@ Automatically selects between usque and official backends based on environment
 """
 import os
 import logging
+import asyncio
 from typing import Union
 from .usque_controller import UsqueController
 from .official_controller import OfficialController
@@ -41,7 +42,7 @@ class WarpController:
         return cls._instance
     
     @classmethod
-    def switch_backend(cls, new_backend: str) -> Union[UsqueController, OfficialController]:
+    async def switch_backend(cls, new_backend: str) -> Union[UsqueController, OfficialController]:
         """
         Switch to a different backend.
         Properly disconnects and cleans up the old backend before switching.
@@ -63,26 +64,29 @@ class WarpController:
                 current_mode = getattr(cls._instance, 'mode', 'proxy')
                 logger.info(f"Disconnecting current backend ({current_backend}, {current_mode} mode)...")
                 
-                cls._instance.disconnect()
+                await cls._instance.disconnect()
                 
                 # Extra cleanup for TUN mode
                 if current_mode == "tun" and hasattr(cls._instance, '_cleanup_tun_routing'):
                     logger.info("Cleaning up TUN routing from previous backend...")
-                    cls._instance._cleanup_tun_routing()
+                    await cls._instance._cleanup_tun_routing()
                     
             except Exception as e:
                 logger.warning(f"Error disconnecting current backend: {e}")
         
         # Ensure port 1080 is released before switching
-        import socket
-        import time
         logger.info("Waiting for port 1080 to be released...")
         for _ in range(10): # Wait up to 5 seconds
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                if s.connect_ex(('127.0.0.1', 1080)) != 0:
-                    # Port is free
-                    break
-            time.sleep(0.5)
+            try:
+                # Use asyncio to check port
+                reader, writer = await asyncio.open_connection('127.0.0.1', 1080)
+                writer.close()
+                await writer.wait_closed()
+                # Connected means port is busy
+                await asyncio.sleep(0.5)
+            except (ConnectionRefusedError, OSError):
+                # Connection refused means port is free
+                break
         
         # Force kill if still occupied (last resort)
         try:
@@ -122,11 +126,11 @@ class WarpController:
         return os.getenv("WARP_MODE", "proxy")
 
     @classmethod
-    def reset(cls):
+    async def reset(cls):
         """Reset the controller instance"""
         if cls._instance:
             try:
-                cls._instance.disconnect()
+                await cls._instance.disconnect()
             except:
                 pass
         cls._instance = None

@@ -3,11 +3,9 @@
 OfficialController - WARP backend implementation using official Cloudflare client
 Supports proxy mode and TUN mode with MASQUE / WireGuard protocols
 """
-import subprocess
+import asyncio
 import logging
 import os
-import time
-import threading
 import json
 from typing import Dict
 
@@ -25,9 +23,8 @@ class OfficialController:
     _status_cache_time = 0
     _STATUS_CACHE_TTL = 8  # seconds
 
-    def __init__(self, socks5_port: int = 1080, http_port: int = 8080):
+    def __init__(self, socks5_port: int = 1080):
         self.socks5_port = socks5_port
-        self.http_port = http_port
         self.mute_backend_logs = False
         self.preferred_protocol = "masque"  # 'masque' or 'wireguard' (wireguard only in TUN)
         self._mode = os.getenv("WARP_MODE", "proxy")  # 'proxy' or 'tun'
@@ -41,6 +38,22 @@ class OfficialController:
         self._saved_interface = None
         self._saved_ip = None
 
+    async def _run_command(self, command: str, timeout=None):
+        try:
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            return process.returncode, stdout.decode().strip(), stderr.decode().strip()
+        except asyncio.TimeoutError:
+            logger.error(f"Command '{command}' timed out")
+            return -1, "", "Timeout"
+        except Exception as e:
+            logger.error(f"Error executing '{command}': {e}")
+            return -1, "", str(e)
+
     # ------------------------------------------------------------------
     # Mode management
     # ------------------------------------------------------------------
@@ -49,7 +62,7 @@ class OfficialController:
     def mode(self) -> str:
         return self._mode
 
-    def set_mode(self, mode: str) -> bool:
+    async def set_mode(self, mode: str) -> bool:
         """Switch between proxy and tun mode."""
         if mode not in ("proxy", "tun"):
             logger.error(f"Invalid mode: {mode}")
@@ -73,15 +86,15 @@ class OfficialController:
             self.preferred_protocol = "masque"
 
         # Disconnect and clean up resources from previous mode
-        self.disconnect()
+        await self.disconnect()
         
         # Extra cleanup when switching FROM TUN mode
         if previous_mode == "tun":
             logger.info("Cleaning up TUN mode resources...")
-            self._cleanup_tun_routing()
-            time.sleep(1)
+            await self._cleanup_tun_routing()
+            await asyncio.sleep(1)
         
-        time.sleep(2)
+        await asyncio.sleep(2)
         self._mode = mode
         os.environ["WARP_MODE"] = mode
         self._invalidate_status_cache()
@@ -92,161 +105,138 @@ class OfficialController:
     # Low-level helpers
     # ------------------------------------------------------------------
 
-    def _stream_logs(self, process, name):
-        try:
-            for line in iter(process.stdout.readline, ""):
-                if not line:
-                    break
-                if not self.mute_backend_logs:
-                    logger.debug(f"[{name}] {line.strip()}")
-        except Exception:
-            pass
-
-    def execute_command(self, command: str):
+    async def execute_command(self, command: str):
         """Execute warp-cli command"""
         try:
-            result = subprocess.run(
-                command, shell=True, capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode != 0:
-                logger.error(f"Command '{command}' failed: {result.stderr.strip()}")
+            rc, stdout, stderr = await self._run_command(command, timeout=10)
+            if rc != 0:
+                logger.error(f"Command '{command}' failed: {stderr.strip()}")
                 return None
-            return result.stdout.strip()
+            return stdout.strip()
         except Exception as e:
             logger.error(f"Error executing '{command}': {e}")
             return None
 
-    def _is_port_open(self, port: int) -> bool:
+    async def _is_port_open(self, port: int) -> bool:
         try:
-            result = subprocess.run(
-                ["ss", "-lnt", f"sport = :{port}"],
-                capture_output=True, text=True,
-            )
-            return f":{port}" in result.stdout
+            rc, stdout, _ = await self._run_command(f"ss -lnt sport = :{port}")
+            return f":{port}" in stdout
         except Exception:
             return False
 
-    def _is_daemon_responsive(self) -> bool:
+    async def _is_daemon_responsive(self) -> bool:
         """Check if warp-svc is running AND responsive"""
         try:
-            res = subprocess.run(
-                ["supervisorctl", "status", "warp-svc"],
-                capture_output=True, text=True,
-            )
-            if res.returncode != 0 or "RUNNING" not in res.stdout:
+            rc, stdout, _ = await self._run_command("supervisorctl status warp-svc")
+            if rc != 0 or "RUNNING" not in stdout:
                 return False
-            result = subprocess.run(
-                "warp-cli --accept-tos status",
-                shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=2,
-            )
-            return result.returncode == 0
+            
+            # Use a short timeout for responsiveness check
+            rc, _, _ = await self._run_command("warp-cli --accept-tos status", timeout=2)
+            return rc == 0
         except Exception:
             return False
 
-    def _check_daemon_running(self) -> bool:
-        return self._is_daemon_responsive()
+    async def _check_daemon_running(self) -> bool:
+        return await self._is_daemon_responsive()
 
     # ------------------------------------------------------------------
     # Connect / Disconnect
     # ------------------------------------------------------------------
 
-    def connect(self) -> bool:
+    async def connect(self) -> bool:
         """Connect to WARP in current mode"""
         if self._mode == "tun":
-            return self._connect_tun()
-        return self._connect_proxy()
+            return await self._connect_tun()
+        return await self._connect_proxy()
 
-    def _connect_proxy(self) -> bool:
+    async def _connect_proxy(self) -> bool:
         """Connect in proxy mode"""
         # Ensure registration exists first
         if not os.path.exists("/var/lib/cloudflare-warp/reg.json"):
             logger.info("No registration found, attempting to register...")
-            self.execute_command("warp-cli --accept-tos registration new")
+            await self.execute_command("warp-cli --accept-tos registration new")
             
-        if not self._is_daemon_responsive():
+        if not await self._is_daemon_responsive():
             logger.info("Daemon not ready, restarting services...")
-            self._stop_services()
-            if not self._start_services_proxy():
+            await self._stop_services()
+            if not await self._start_services_proxy():
                 logger.error("Failed to start official WARP services (proxy)")
                 return False
 
-        self._ensure_socat()
+        await self._ensure_socat()
 
         logger.info("Connecting WARP (official, proxy mode)...")
         
         # Reset mode first to ensure clean state
-        self.execute_command("warp-cli --accept-tos disconnect")
+        await self.execute_command("warp-cli --accept-tos disconnect")
         
         # Configure
-        self.execute_command("warp-cli --accept-tos mode proxy")
-        self.execute_command("warp-cli --accept-tos proxy port 40001")
-        self.execute_command("warp-cli --accept-tos tunnel protocol set MASQUE")
+        await self.execute_command("warp-cli --accept-tos mode proxy")
+        await self.execute_command("warp-cli --accept-tos proxy port 40001")
+        await self.execute_command("warp-cli --accept-tos tunnel protocol set MASQUE")
         
         # Connect
-        res = self.execute_command("warp-cli --accept-tos connect")
+        res = await self.execute_command("warp-cli --accept-tos connect")
         if res and "Error" in res:
              logger.error(f"Connect command returned error: {res}")
 
-        time.sleep(2)
+        await asyncio.sleep(2)
 
-        if self.wait_for_status("connected", timeout=30): # Reduced timeout for faster feedback
+        if await self.wait_for_status("connected", timeout=30): # Reduced timeout for faster feedback
             self.mute_backend_logs = True
             self._invalidate_status_cache()
             logger.info("Official WARP proxy connection successful")
-            self._start_http_proxy()
             return True
 
         # Diagnostic log
-        status = self.execute_command("warp-cli --accept-tos status")
+        status = await self.execute_command("warp-cli --accept-tos status")
         logger.error(f"Official WARP proxy connection failed. Status: {status}")
         return False
 
-    def _connect_tun(self) -> bool:
+    async def _connect_tun(self) -> bool:
         """Connect in TUN mode (full tunnel via virtual interface)"""
         if os.name != 'posix':
              logger.error("TUN mode is only supported on Linux/Unix systems")
              return False
 
-        if not self._is_daemon_responsive():
+        if not await self._is_daemon_responsive():
             logger.info("Daemon not ready, restarting services...")
-            self._stop_services()
-            if not self._start_services_tun():
+            await self._stop_services()
+            if not await self._start_services_tun():
                 logger.error("Failed to start official WARP services (TUN)")
                 return False
 
         # Save original route BEFORE warp-cli connect modifies routing
-        self._saved_gateway, self._saved_interface, self._saved_ip = self._tun_manager.get_default_route()
+        self._saved_gateway, self._saved_interface, self._saved_ip = await self._tun_manager.get_default_route()
 
         logger.info("Connecting WARP (official, TUN mode)...")
-        self.execute_command("warp-cli --accept-tos mode warp")
+        await self.execute_command("warp-cli --accept-tos mode warp")
 
         # Set tunnel protocol (WireGuard or MASQUE)
         proto_name = "WireGuard" if self.preferred_protocol == "wireguard" else "MASQUE"
-        self.execute_command(f"warp-cli --accept-tos tunnel protocol set {proto_name}")
+        await self.execute_command(f"warp-cli --accept-tos tunnel protocol set {proto_name}")
 
-        self.execute_command("warp-cli --accept-tos connect")
+        await self.execute_command("warp-cli --accept-tos connect")
 
-        time.sleep(2)
+        await asyncio.sleep(2)
 
-        if self.wait_for_status("connected", timeout=600):
+        if await self.wait_for_status("connected", timeout=600):
             self.mute_backend_logs = True
             self._invalidate_status_cache()
             logger.info("Official WARP TUN connection successful")
             
             # Give WARP a moment to fully initialize nftables rules
-            time.sleep(2)
+            await asyncio.sleep(2)
             
             # Apply policy routing so panel/proxy response traffic bypasses WARP TUN
-            self._apply_tun_routing()
-            # Proxy listeners disabled in TUN mode
-            # self._start_tun_proxy()
+            await self._apply_tun_routing()
             return True
 
         logger.error("Official WARP TUN connection failed")
         return False
 
-    def disconnect(self) -> bool:
+    async def disconnect(self) -> bool:
         """Disconnect from WARP and stop services"""
         logger.info(f"Disconnecting WARP (official, {self._mode} mode)...")
         self._cached_ip_info = None
@@ -255,15 +245,15 @@ class OfficialController:
         # Clean up TUN routing before disconnecting
         if self._mode == "tun":
             logger.info("Cleaning up TUN routing and firewall rules...")
-            self._cleanup_tun_routing()
+            await self._cleanup_tun_routing()
 
         try:
-            self.execute_command("warp-cli --accept-tos disconnect")
-            self.wait_for_status("disconnected", timeout=5)
+            await self.execute_command("warp-cli --accept-tos disconnect")
+            await self.wait_for_status("disconnected", timeout=5)
         except Exception:
             pass
 
-        self._stop_services()
+        await self._stop_services()
         logger.info("WARP disconnected successfully")
         return True
 
@@ -271,26 +261,29 @@ class OfficialController:
     # Service management
     # ------------------------------------------------------------------
 
-    def _start_services_proxy(self) -> bool:
+    async def _start_services_proxy(self) -> bool:
         """Start services for proxy mode"""
         try:
             logger.info("Starting background services (proxy mode)...")
             self.mute_backend_logs = False
 
             try:
-                subprocess.run(["supervisorctl", "start", "warp-svc"], check=True)
-            except subprocess.CalledProcessError:
+                rc, _, _ = await self._run_command("supervisorctl start warp-svc")
+                if rc != 0:
+                     logger.error("Failed to start warp-svc")
+                     return False
+            except Exception:
                 logger.error("Failed to start warp-svc")
                 return False
 
-            time.sleep(3)
-            self._ensure_socat()
+            await asyncio.sleep(3)
+            await self._ensure_socat()
 
             for _ in range(30):
-                if self._is_daemon_responsive():
+                if await self._is_daemon_responsive():
                     logger.info("warp-svc is ready")
-                    return self._configure_warp_proxy()
-                time.sleep(1)
+                    return await self._configure_warp_proxy()
+                await asyncio.sleep(1)
 
             logger.error("Timed out waiting for warp-svc")
             return False
@@ -298,25 +291,28 @@ class OfficialController:
             logger.error(f"Error starting proxy services: {e}")
             return False
 
-    def _start_services_tun(self) -> bool:
+    async def _start_services_tun(self) -> bool:
         """Start services for TUN mode"""
         try:
             logger.info("Starting background services (TUN mode)...")
             self.mute_backend_logs = False
 
             try:
-                subprocess.run(["supervisorctl", "start", "warp-svc"], check=True)
-            except subprocess.CalledProcessError:
+                rc, _, _ = await self._run_command("supervisorctl start warp-svc")
+                if rc != 0:
+                     logger.error("Failed to start warp-svc")
+                     return False
+            except Exception:
                 logger.error("Failed to start warp-svc")
                 return False
 
-            time.sleep(3)
+            await asyncio.sleep(3)
 
             for _ in range(30):
-                if self._is_daemon_responsive():
+                if await self._is_daemon_responsive():
                     logger.info("warp-svc is ready")
-                    return self._configure_warp_tun()
-                time.sleep(1)
+                    return await self._configure_warp_tun()
+                await asyncio.sleep(1)
 
             logger.error("Timed out waiting for warp-svc")
             return False
@@ -324,46 +320,44 @@ class OfficialController:
             logger.error(f"Error starting TUN services: {e}")
             return False
 
-    def _configure_warp_proxy(self) -> bool:
+    async def _configure_warp_proxy(self) -> bool:
         """Apply WARP configuration for proxy mode"""
         try:
             if not os.path.exists("/var/lib/cloudflare-warp/reg.json"):
                 logger.info("Registering new WARP account...")
-                self.execute_command("warp-cli --accept-tos registration delete")
-                self.execute_command("warp-cli --accept-tos registration new")
+                await self.execute_command("warp-cli --accept-tos registration delete")
+                await self.execute_command("warp-cli --accept-tos registration new")
 
-            self.execute_command("warp-cli --accept-tos tunnel protocol set MASQUE")
-            self.execute_command("warp-cli --accept-tos mode proxy")
-            self.execute_command("warp-cli --accept-tos proxy port 40001")
+            await self.execute_command("warp-cli --accept-tos tunnel protocol set MASQUE")
+            await self.execute_command("warp-cli --accept-tos mode proxy")
+            await self.execute_command("warp-cli --accept-tos proxy port 40001")
             return True
         except Exception as e:
             logger.error(f"Error configuring WARP proxy: {e}")
             return False
 
-    def _configure_warp_tun(self) -> bool:
+    async def _configure_warp_tun(self) -> bool:
         """Apply WARP configuration for TUN mode"""
         try:
             if not os.path.exists("/var/lib/cloudflare-warp/reg.json"):
                 logger.info("Registering new WARP account...")
-                self.execute_command("warp-cli --accept-tos registration delete")
-                self.execute_command("warp-cli --accept-tos registration new")
+                await self.execute_command("warp-cli --accept-tos registration delete")
+                await self.execute_command("warp-cli --accept-tos registration new")
 
             proto_name = "WireGuard" if self.preferred_protocol == "wireguard" else "MASQUE"
-            self.execute_command(f"warp-cli --accept-tos tunnel protocol set {proto_name}")
-            self.execute_command("warp-cli --accept-tos mode warp")
+            await self.execute_command(f"warp-cli --accept-tos tunnel protocol set {proto_name}")
+            await self.execute_command("warp-cli --accept-tos mode warp")
             return True
         except Exception as e:
             logger.error(f"Error configuring WARP TUN: {e}")
             return False
 
-    def _stop_services(self):
+    async def _stop_services(self):
         """Stop all possible services (safe for both modes)"""
         logger.info("Stopping official services...")
         try:
-            subprocess.run(["supervisorctl", "stop", "tun-proxy"], check=False)
-            subprocess.run(["supervisorctl", "stop", "http-proxy"], check=False)
-            subprocess.run(["supervisorctl", "stop", "socat"], check=False)
-            subprocess.run(["supervisorctl", "stop", "warp-svc"], check=False)
+            await self._run_command("supervisorctl stop socat")
+            await self._run_command("supervisorctl stop warp-svc")
         except Exception as e:
             logger.error(f"Error stopping services: {e}")
 
@@ -371,73 +365,38 @@ class OfficialController:
     # Auxiliary proxy helpers
     # ------------------------------------------------------------------
 
-    def _ensure_socat(self):
+    async def _ensure_socat(self):
         """Ensure socat service is running (proxy mode only)"""
         if self._mode != "proxy":
             return
 
         sys_active = False
         try:
-            res = subprocess.run(
-                ["supervisorctl", "status", "socat"],
-                capture_output=True, text=True,
-            )
-            sys_active = res.returncode == 0 and "RUNNING" in res.stdout
+            rc, stdout, _ = await self._run_command("supervisorctl status socat")
+            sys_active = rc == 0 and "RUNNING" in stdout
         except Exception:
             pass
 
-        port_open = self._is_port_open(self.socks5_port)
+        port_open = await self._is_port_open(self.socks5_port)
 
         if sys_active and port_open:
             return
 
         logger.info("Starting socat service...")
         try:
-            subprocess.run(["supervisorctl", "start", "socat"], check=True)
-            time.sleep(1)
-            if not self._is_port_open(self.socks5_port):
+            await self._run_command("supervisorctl start socat")
+            await asyncio.sleep(1)
+            if not await self._is_port_open(self.socks5_port):
                 logger.warning(f"Socat started but port {self.socks5_port} not listening yet")
-                time.sleep(2)
+                await asyncio.sleep(2)
         except Exception as e:
             logger.error(f"Error starting socat: {e}")
-
-    def _start_http_proxy(self):
-        """Start HTTP proxy for proxy mode (chains through SOCKS5)"""
-        try:
-            res = subprocess.run(
-                ["supervisorctl", "status", "http-proxy"],
-                capture_output=True, text=True,
-            )
-            if "RUNNING" in res.stdout:
-                return
-            logger.info("Starting HTTP proxy (proxy mode)...")
-            subprocess.run(["supervisorctl", "start", "http-proxy"], check=False)
-        except Exception as e:
-            logger.warning(f"Failed to start HTTP proxy: {e}")
-
-    def _start_tun_proxy(self):
-        """Start SOCKS5 + HTTP proxy for TUN mode"""
-        try:
-            res = subprocess.run(
-                ["supervisorctl", "status", "tun-proxy"],
-                capture_output=True, text=True,
-            )
-            if "RUNNING" in res.stdout:
-                return
-            logger.info("Starting TUN proxy (SOCKS5 + HTTP)...")
-            subprocess.run(["supervisorctl", "start", "tun-proxy"], check=False)
-            for _ in range(10):
-                if self._is_port_open(self.socks5_port):
-                    break
-                time.sleep(0.5)
-        except Exception as e:
-            logger.warning(f"Failed to start TUN proxy: {e}")
 
     # ------------------------------------------------------------------
     # TUN routing helpers (Delegated to LinuxTunManager)
     # ------------------------------------------------------------------
 
-    def _apply_tun_routing(self):
+    async def _apply_tun_routing(self):
         """Apply policy-based routing so panel/proxy response traffic bypasses WARP TUN."""
         gw = self._saved_gateway
         iface = self._saved_interface
@@ -449,38 +408,35 @@ class OfficialController:
 
         try:
             # 1. Setup policy routing (bypass)
-            self._tun_manager.setup_bypass_routing(gw, iface, ip)
+            await self._tun_manager.setup_bypass_routing(gw, iface, ip)
 
             # 2. Add nftables rules to allow traffic on eth0
-            # Allow: API (8000) only. SOCKS5 (1080) and HTTP Proxy (8080) are disabled in TUN mode.
-            self._tun_manager.apply_nftables_allow_rules(iface, [8000])
+            # Allow: API (8000) only. SOCKS5 (1080) proxy disabled in TUN mode.
+            await self._tun_manager.apply_nftables_allow_rules(iface, [8000])
 
             logger.info(f"TUN policy route applied: from {ip} via {gw} dev {iface}")
         except Exception as e:
             logger.error(f"Failed to apply TUN routing: {e}")
 
-    def _cleanup_tun_routing(self):
+    async def _cleanup_tun_routing(self):
         """Remove policy routing rules, table 100, iptables connmark, and nftables rules."""
         # Clean up bypass routing
-        self._tun_manager.cleanup_bypass_routing(self._saved_ip)
+        await self._tun_manager.cleanup_bypass_routing(self._saved_ip)
         logger.info("TUN routing cleanup complete")
 
     # ------------------------------------------------------------------
     # Connectivity checks
     # ------------------------------------------------------------------
 
-    def is_connected(self) -> bool:
+    async def is_connected(self) -> bool:
         """Check if WARP is connected"""
-        if not self._check_daemon_running():
+        if not await self._check_daemon_running():
             return False
         try:
-            result = subprocess.run(
-                "warp-cli --accept-tos status",
-                shell=True, capture_output=True, text=True, timeout=3,
-            )
-            if result.returncode != 0:
+            rc, stdout, _ = await self._run_command("warp-cli --accept-tos status", timeout=3)
+            if rc != 0:
                 return False
-            output = result.stdout.lower()
+            output = stdout.lower()
             return "connected" in output and "disconnected" not in output
         except Exception:
             return False
@@ -489,15 +445,15 @@ class OfficialController:
     # Status / IP Info
     # ------------------------------------------------------------------
 
-    def get_status(self) -> Dict:
-        now = time.time()
+    async def get_status(self) -> Dict:
+        now = asyncio.get_running_loop().time()
         if (
             OfficialController._status_cache is not None
             and now - OfficialController._status_cache_time < OfficialController._STATUS_CACHE_TTL
         ):
             return OfficialController._status_cache
 
-        status = self._get_status_uncached()
+        status = await self._get_status_uncached()
         OfficialController._status_cache = status
         OfficialController._status_cache_time = now
         return status
@@ -506,7 +462,7 @@ class OfficialController:
         OfficialController._status_cache = None
         OfficialController._status_cache_time = 0
 
-    def _get_status_uncached(self) -> Dict:
+    async def _get_status_uncached(self) -> Dict:
         base_status = {
             "backend": "official",
             "status": "disconnected",
@@ -520,22 +476,22 @@ class OfficialController:
             "connection_time": "Unknown",
             "network_type": "Unknown",
             "proxy_address": f"socks5://127.0.0.1:{self.socks5_port}",
-            "http_proxy_address": f"http://127.0.0.1:{self.http_port}",
+
             "details": {},
         }
 
-        if not self.is_connected():
+        if not await self.is_connected():
             self._cached_ip_info = None
             return base_status
 
         base_status["status"] = "connected"
 
-        now = time.time()
+        now = asyncio.get_running_loop().time()
         if self._cached_ip_info and (now - self._cache_time) < self._cache_ttl:
             base_status.update(self._cached_ip_info)
             return base_status
 
-        ip_info = self._fetch_ip_info()
+        ip_info = await self._fetch_ip_info()
         if ip_info:
             self._cached_ip_info = ip_info
             self._cache_time = now
@@ -545,26 +501,18 @@ class OfficialController:
 
         return base_status
 
-    def _fetch_ip_info(self) -> dict:
+    async def _fetch_ip_info(self) -> dict:
         """Fetch IP info. Proxy mode: via SOCKS5. TUN mode: direct."""
         try:
             if self._mode == "tun":
-                cmd = [
-                    "curl", "-s", "--max-time", "5",
-                    "http://ip-api.com/json/?fields=status,message,query,country,city,isp",
-                ]
+                cmd = "curl -s --max-time 5 \"http://ip-api.com/json/?fields=status,message,query,country,city,isp\""
             else:
-                cmd = [
-                    "curl",
-                    "-x", f"socks5h://127.0.0.1:{self.socks5_port}",
-                    "-s", "--max-time", "5",
-                    "http://ip-api.com/json/?fields=status,message,query,country,city,isp",
-                ]
+                cmd = f"curl -x socks5h://127.0.0.1:{self.socks5_port} -s --max-time 5 \"http://ip-api.com/json/?fields=status,message,query,country,city,isp\""
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+            rc, stdout, _ = await self._run_command(cmd, timeout=8)
 
-            if result.returncode == 0 and result.stdout:
-                data = json.loads(result.stdout)
+            if rc == 0 and stdout:
+                data = json.loads(stdout)
                 if data.get("status") == "success":
                     isp_value = data.get("isp") or "Cloudflare WARP"
                     return {
@@ -577,8 +525,6 @@ class OfficialController:
                     }
                 else:
                     logger.warning("IP API returned failure: %s", data.get("message"))
-        except subprocess.TimeoutExpired:
-            logger.warning("Timeout getting IP info")
         except Exception as e:
             logger.error(f"Error getting IP info: {e}")
 
@@ -588,27 +534,28 @@ class OfficialController:
     # Operations
     # ------------------------------------------------------------------
 
-    def wait_for_status(self, target_status: str, timeout: int = 15) -> bool:
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            if target_status == "connected" and self.is_connected():
+    async def wait_for_status(self, target_status: str, timeout: int = 15) -> bool:
+        start_time = asyncio.get_running_loop().time()
+        while asyncio.get_running_loop().time() - start_time < timeout:
+            connected = await self.is_connected()
+            if target_status == "connected" and connected:
                 self._invalidate_status_cache()
                 return True
-            elif target_status == "disconnected" and not self.is_connected():
+            elif target_status == "disconnected" and not connected:
                 self._invalidate_status_cache()
                 return True
-            time.sleep(2)
+            await asyncio.sleep(2)
         return False
 
-    def rotate_ip_simple(self) -> bool:
+    async def rotate_ip_simple(self) -> bool:
         logger.info("Rotating IP (official: disconnect + reconnect)...")
-        self.disconnect()
-        time.sleep(2)
-        if self.connect():
-            return self.wait_for_status("connected", timeout=15)
+        await self.disconnect()
+        await asyncio.sleep(2)
+        if await self.connect():
+            return await self.wait_for_status("connected", timeout=15)
         return False
 
-    def set_custom_endpoint(self, endpoint: str) -> bool:
+    async def set_custom_endpoint(self, endpoint: str) -> bool:
         try:
             if not endpoint:
                 logger.info("Resetting custom endpoint (official)...")
@@ -617,20 +564,20 @@ class OfficialController:
                 logger.info(f"Setting custom endpoint to {endpoint} (official)...")
                 cmd = f"warp-cli --accept-tos tunnel endpoint set {endpoint}"
 
-            self.execute_command(cmd)
+            await self.execute_command(cmd)
 
             try:
-                self.execute_command("warp-cli --accept-tos disconnect")
-                self.wait_for_status("disconnected", timeout=5)
+                await self.execute_command("warp-cli --accept-tos disconnect")
+                await self.wait_for_status("disconnected", timeout=5)
             except Exception:
                 pass
-            time.sleep(10)
-            return self.connect()
+            await asyncio.sleep(10)
+            return await self.connect()
         except Exception as e:
             logger.error(f"Failed to set custom endpoint: {e}")
             return False
 
-    def set_protocol(self, protocol: str) -> bool:
+    async def set_protocol(self, protocol: str) -> bool:
         """Set WARP tunnel protocol. WireGuard only available in TUN mode."""
         protocol = (protocol or "masque").lower()
 
@@ -654,22 +601,22 @@ class OfficialController:
             logger.info(f"Switching protocol to {protocol.upper()}...")
 
             try:
-                self.execute_command("warp-cli --accept-tos disconnect")
-                self.wait_for_status("disconnected", timeout=5)
+                await self.execute_command("warp-cli --accept-tos disconnect")
+                await self.wait_for_status("disconnected", timeout=5)
             except Exception:
                 pass
 
             proto_name = "WireGuard" if protocol == "wireguard" else "MASQUE"
             cmd = f"warp-cli --accept-tos tunnel protocol set {proto_name}"
-            res = self.execute_command(cmd)
+            res = await self.execute_command(cmd)
             if res is None:
                 logger.error("Failed to update tunnel protocol")
                 return False
 
-            self._stop_services()
-            time.sleep(2)
+            await self._stop_services()
+            await asyncio.sleep(2)
 
-            return self.connect()
+            return await self.connect()
         except Exception as e:
             logger.error(f"Failed to set protocol: {e}")
             return False
@@ -677,7 +624,9 @@ class OfficialController:
     # ------------------------------------------------------------------
     # Geo helpers
     # ------------------------------------------------------------------
-
+    # ... (Geo helpers are purely functional, no async needed, but usually not called directly async)
+    # They are just string lookups. I will leave them as sync methods.
+    
     def _get_city_from_colo(self, colo: str) -> str:
         city_map = {
             "LAX": "Los Angeles", "SJC": "San Jose", "ORD": "Chicago",
@@ -701,3 +650,4 @@ class OfficialController:
             "TW": "Taiwan",
         }
         return country_map.get(loc_code.upper(), loc_code)
+

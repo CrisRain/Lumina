@@ -25,7 +25,6 @@ services:
     ports:
       - "5173:8000" # Web UI (served by FastAPI)
       - "127.0.0.1:1080:1080" # SOCKS5 Proxy (localhost only)
-      - "127.0.0.1:8080:8080" # HTTP Proxy  (localhost only)
     volumes:
       - warp_data:/var/lib/cloudflare-warp
       - warp_usque:/var/lib/warp

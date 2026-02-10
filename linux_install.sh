@@ -44,27 +44,19 @@ else
     echo "WARP already installed"
 fi
 
-# 4. Install Helper Binaries (usque & gost)
-echo -e "${GREEN}[4/8] Installing usque & gost...${NC}"
+# 4. Install Helper Binaries (usque)
+echo -e "${GREEN}[4/8] Installing usque...${NC}"
 
-# usque
+# usque — auto-detect latest version
 if [ ! -f /usr/local/bin/usque ]; then
-    echo "Downloading usque..."
-    curl -L -o /tmp/usque.zip https://github.com/Diniboy1123/usque/releases/download/v1.4.2/usque_1.4.2_linux_amd64.zip
+    echo "Downloading usque (latest)..."
+    USQUE_VERSION=$(curl -fsSL https://api.github.com/repos/Diniboy1123/usque/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/')
+    echo "Detected usque version: ${USQUE_VERSION}"
+    curl -L -o /tmp/usque.zip "https://github.com/Diniboy1123/usque/releases/download/v${USQUE_VERSION}/usque_${USQUE_VERSION}_linux_amd64.zip"
     unzip -o /tmp/usque.zip -d /tmp/
     mv /tmp/usque /usr/local/bin/usque
     chmod +x /usr/local/bin/usque
     rm /tmp/usque.zip
-fi
-
-# gost
-if [ ! -f /usr/local/bin/gost ]; then
-    echo "Downloading gost..."
-    curl -L -o /tmp/gost.tar.gz https://github.com/ginuerzh/gost/releases/download/v2.12.0/gost_2.12.0_linux_amd64.tar.gz
-    tar xzf /tmp/gost.tar.gz -C /tmp/
-    mv /tmp/gost /usr/local/bin/gost
-    chmod +x /usr/local/bin/gost
-    rm /tmp/gost.tar.gz
 fi
 
 # 5. Setup Python Environment
@@ -76,7 +68,6 @@ if [ ! -d "venv" ]; then
 fi
 source venv/bin/activate
 pip install -r requirements.txt
-pip install uvicorn psutil
 
 # 6. Build Frontend
 echo -e "${GREEN}[6/8] Building Frontend...${NC}"
@@ -149,23 +140,6 @@ redirect_stderr=true
 stdout_logfile=/dev/null
 priority=20
 
-[program:http-proxy]
-command=/usr/local/bin/gost -L http://0.0.0.0:8080 -F socks5://127.0.0.1:1080
-user=root
-autostart=false
-autorestart=true
-redirect_stderr=true
-stdout_logfile=/dev/null
-priority=25
-
-[program:tun-proxy]
-command=/usr/local/bin/gost -L socks5://0.0.0.0:1080 -L http://0.0.0.0:8080
-user=root
-autostart=false
-autorestart=true
-redirect_stderr=true
-stdout_logfile=/dev/null
-priority=25
 EOF
 
 # Reload supervisor

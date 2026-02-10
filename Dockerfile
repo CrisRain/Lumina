@@ -1,78 +1,99 @@
-# Stage 1a: Download usque (WARP MASQUE client)
-FROM alpine:latest AS usque-download
+# ============================================================
+# WarpPanel Dockerfile — multi-stage, layer-optimized build
+# ============================================================
+
+# --------------- ARGs (pinned versions) ---------------
+ARG NODE_VERSION=20
+ARG UBUNTU_VERSION=22.04
+ARG ALPINE_VERSION=3.21
+
+# ============================================================
+# Stage 1: Download external binaries
+# ============================================================
+FROM alpine:${ALPINE_VERSION} AS downloader
 WORKDIR /tmp
-RUN apk add --no-cache curl unzip
-RUN curl -L -o usque.zip https://github.com/Diniboy1123/usque/releases/download/v1.4.2/usque_1.4.2_linux_amd64.zip \
+RUN apk add --no-cache curl unzip jq
+
+# Download usque (WARP MASQUE client) — auto-detect latest release
+RUN USQUE_VERSION=$(curl -fsSL https://api.github.com/repos/Diniboy1123/usque/releases/latest | jq -r '.tag_name' | sed 's/^v//') \
+    && echo "Detected usque version: ${USQUE_VERSION}" \
+    && curl -fSL -o usque.zip \
+    "https://github.com/Diniboy1123/usque/releases/download/v${USQUE_VERSION}/usque_${USQUE_VERSION}_linux_amd64.zip" \
     && unzip usque.zip \
-    && chmod +x usque
+    && chmod +x usque \
+    && rm -f usque.zip
 
-# Stage 1b: Download gost (multi-protocol proxy)
-FROM alpine:latest AS gost-download
-WORKDIR /tmp
-RUN apk add --no-cache curl tar
-RUN curl -L -o gost.tar.gz https://github.com/ginuerzh/gost/releases/download/v2.12.0/gost_2.12.0_linux_amd64.tar.gz \
-    && tar xzf gost.tar.gz \
-    && chmod +x gost
-
+# ============================================================
 # Stage 2: Build Frontend
-FROM node:20-alpine AS frontend-build
-WORKDIR /frontend_app
-COPY frontend/package*.json ./
-RUN npm install
+# ============================================================
+FROM node:${NODE_VERSION}-alpine AS frontend-build
+WORKDIR /build
+
+# Install deps first (layer cache for package.json changes only)
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci --prefer-offline 2>/dev/null || npm install
+
+# Then copy source & build
 COPY frontend/ .
-# Ensure we build for production
 RUN npm run build
 
-# Stage 3: Final Monolithic Image
-FROM ubuntu:22.04
+# ============================================================
+# Stage 3: Final runtime image
+# ============================================================
+FROM ubuntu:${UBUNTU_VERSION}
 
-# Install basic deps + python + warp deps + networking tools + supervisor
-RUN apt-get update && apt-get install -y \
+LABEL org.opencontainers.image.title="WarpPanel" \
+    org.opencontainers.image.description="Cloudflare WARP management panel with proxy support" \
+    org.opencontainers.image.source="https://github.com/CrisRain/warppanel"
+
+# ---- System dependencies (single RUN to minimize layers) ----
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl gpg lsb-release ca-certificates dbus \
-    python3 python3-pip socat \
-    iputils-ping iproute2 iptables procps supervisor \
-    && rm -rf /var/lib/apt/lists/*
+    python3 python3-pip \
+    socat iputils-ping iproute2 iptables procps supervisor \
+    # Install Cloudflare WARP official client
+    && curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+    | gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
+    > /etc/apt/sources.list.d/cloudflare-client.list \
+    && apt-get update && apt-get install -y --no-install-recommends cloudflare-warp \
+    # Cleanup
+    && apt-get purge -y --auto-remove gpg lsb-release \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# Install Cloudflare Warp (official client - kept for fallback)
-RUN curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list \
-    && apt-get update && apt-get install -y cloudflare-warp
+# ---- Copy external binaries ----
+COPY --from=downloader /tmp/usque /usr/local/bin/usque
 
-# Copy usque binary from download stage
-COPY --from=usque-download /tmp/usque /usr/local/bin/usque
-
-# Copy gost binary from download stage
-COPY --from=gost-download /tmp/gost /usr/local/bin/gost
-
-# Setup Python App
+# ---- Python app setup ----
 WORKDIR /app
-ENV PYTHONUNBUFFERED=1
-ENV WARP_DATA_DIR=/app/data
+ENV PYTHONUNBUFFERED=1 \
+    WARP_DATA_DIR=/app/data
+
+# Install Python deps (separate layer for caching)
 COPY controller-app/requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
-RUN pip3 install uvicorn psutil
 
-# Create data directories
-RUN mkdir -p /app/data/kernels
-RUN mkdir -p /var/lib/warp
+# ---- Create runtime directories ----
+RUN mkdir -p /app/data/kernels /var/lib/warp /var/log/supervisor
 
-# Copy Backend Code
-COPY controller-app/app /app/app
-# Copy Frontend Build
-COPY --from=frontend-build /frontend_app/dist /app/static
-
-# Supervisor Configuration
+# ---- Supervisor config (rarely changes) ----
 COPY controller-app/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Ports
-# 8000: Web UI + API
-# 1080: SOCKS5 Proxy
-# 8080: HTTP Proxy
-EXPOSE 8000 1080 8080
-
-# Copy entrypoint
+# ---- Entrypoint (rarely changes) ----
 COPY controller-app/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# Use entrypoint to start init
+# ---- Application code (changes most often → last) ----
+COPY controller-app/app /app/app
+COPY --from=frontend-build /build/dist /app/static
+
+# ---- Ports ----
+# 8000: Web UI + API
+# 1080: SOCKS5 Proxy
+EXPOSE 8000 1080
+
+# ---- Health check ----
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:8000/api/status || exit 1
+
 CMD ["/app/entrypoint.sh"]

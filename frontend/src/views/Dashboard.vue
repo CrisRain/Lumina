@@ -113,16 +113,6 @@
               <p class="font-mono text-sm text-gray-900 break-all">{{ proxyAddress }}</p>
             </div>
 
-            <!-- HTTP -->
-            <div class="p-4 bg-gray-50 rounded-xl border border-gray-200 group hover:border-blue-300 transition-colors">
-              <div class="flex justify-between items-start mb-2">
-                <span class="text-xs font-semibold text-gray-500 uppercase">HTTP</span>
-                <button @click="copyToClipboard(httpProxyAddress)" class="text-gray-400 hover:text-blue-600 transition-colors">
-                  <DocumentDuplicateIcon class="w-4 h-4" />
-                </button>
-              </div>
-              <p class="font-mono text-sm text-gray-900 break-all">{{ httpProxyAddress }}</p>
-            </div>
           </div>
         </div>
 
@@ -141,10 +131,10 @@
           <div class="flex-1 bg-gray-900 rounded-xl p-4 overflow-hidden relative group">
              <div class="absolute inset-0 overflow-y-auto custom-scrollbar p-4 space-y-2">
                <div v-if="logs.length === 0" class="text-gray-600 text-xs text-center mt-10">No activity recorded</div>
-               <div v-for="(log, i) in logs.slice(-10).reverse()" :key="i" class="text-[10px] font-mono border-l-2 pl-2" :class="getLogColor(log.level)">
-                 <span class="opacity-50">{{ log.timestamp.split(' ')[1] }}</span> 
-                 <span class="ml-1 text-gray-300">{{ log.message }}</span>
-               </div>
+              <div v-for="(log, i) in logs.slice(-10).reverse()" :key="i" class="text-[10px] font-mono border-l-2 pl-2" :class="getLogColor(log.level)">
+                <span class="opacity-50">{{ log.timestamp }}</span> 
+                <span class="ml-1 text-gray-300">{{ log.message }}</span>
+              </div>
              </div>
           </div>
         </div>
@@ -189,7 +179,7 @@ const country = computed(() => statusData.value.country || statusData.value.loca
 const isp = computed(() => statusData.value.isp || statusData.value.details?.isp || 'Cloudflare WARP');
 const protocol = computed(() => statusData.value.warp_protocol || statusData.value.protocol || 'MASQUE');
 const proxyAddress = computed(() => statusData.value.proxy_address || 'socks5://127.0.0.1:1080');
-const httpProxyAddress = computed(() => statusData.value.http_proxy_address || 'http://127.0.0.1:8080');
+
 const warpMode = computed(() => statusData.value.warp_mode || 'proxy');
 const backend = computed(() => statusData.value.backend || 'usque');
 

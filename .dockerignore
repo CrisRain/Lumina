@@ -1,0 +1,37 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# IDE / Editor
+.vscode
+.idea
+.trae
+.gemini
+.agent
+
+# Documentation
+*.md
+LICENSE
+
+# Frontend dev artifacts (we COPY frontend/ and run npm install inside)
+frontend/node_modules
+frontend/dist
+
+# Python caches
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+
+# Data & env
+controller-app/data/
+*.db
+.env
+.env.*
+.DS_Store
+
+# Build scripts & CI
+push_to_hub.ps1
+docker-compose*.yml
+resources/
