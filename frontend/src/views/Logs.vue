@@ -1,7 +1,8 @@
 <template>
-  <div class="h-full flex flex-col space-y-4">
+  <!-- Constrain height to viewport minus layout padding (Mobile: ~6rem, Desktop: ~4rem) -->
+  <div class="flex flex-col space-y-4 h-[calc(100vh-6rem)] md:h-[calc(100vh-4rem)]">
     <!-- Header Controls -->
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 flex-shrink-0">
       <div>
         <h2 class="text-2xl font-bold text-gray-900">Service Logs</h2>
         <p class="text-sm text-gray-500">Real-time system activity and debugging</p>
@@ -50,7 +51,7 @@
     </div>
 
     <!-- Stats Cards -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 flex-shrink-0">
       <div class="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex items-center justify-between">
         <div>
           <p class="text-xs text-gray-500 font-medium">Total</p>
@@ -82,7 +83,8 @@
     </div>
 
     <!-- Logs Console -->
-    <div class="flex-1 bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex flex-col min-h-[400px]">
+    <!-- min-h-0 is crucial for nested flex scrolling -->
+    <div class="flex-1 bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex flex-col min-h-0">
       <div 
         ref="logsContainer"
         class="flex-1 bg-[#1e1e1e] p-4 font-mono text-xs overflow-y-auto custom-scrollbar"

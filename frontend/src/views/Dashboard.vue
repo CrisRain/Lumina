@@ -72,7 +72,7 @@
         </div>
 
         <!-- IP & Location Grid -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
           <div class="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
             <p class="text-xs text-gray-500 font-medium mb-1">Public IP</p>
             <p class="font-mono font-semibold text-gray-900 truncate" :title="ipAddress">{{ ipAddress }}</p>
@@ -128,14 +128,14 @@
             </router-link>
           </div>
           
-          <div class="flex-1 bg-gray-900 rounded-xl p-4 overflow-hidden relative group">
-             <div class="absolute inset-0 overflow-y-auto custom-scrollbar p-4 space-y-2">
-               <div v-if="logs.length === 0" class="text-gray-600 text-xs text-center mt-10">No activity recorded</div>
-              <div v-for="(log, i) in logs.slice(-10).reverse()" :key="i" class="text-[10px] font-mono border-l-2 pl-2" :class="getLogColor(log.level)">
-                <span class="opacity-50">{{ log.timestamp }}</span> 
-                <span class="ml-1 text-gray-300">{{ log.message }}</span>
+          <div ref="activityContainer" class="flex-1 bg-gray-900 rounded-xl overflow-y-auto custom-scrollbar" style="max-height: 320px;">
+            <div class="p-4 space-y-1.5">
+              <div v-if="logs.length === 0" class="text-gray-600 text-xs text-center py-10">No activity recorded</div>
+              <div v-for="(log, i) in recentLogs" :key="i" class="text-[11px] font-mono leading-relaxed border-l-2 pl-2 py-0.5" :class="getLogColor(log.level)">
+                <span class="text-gray-400 select-none font-medium">{{ formatTime(log.timestamp) }}</span>
+                <span class="ml-2 text-gray-300 break-all whitespace-pre-wrap">{{ log.message }}</span>
               </div>
-             </div>
+            </div>
           </div>
         </div>
       </div>
@@ -144,7 +144,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, computed } from 'vue';
+import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue';
 import axios from 'axios';
 import { 
   PowerIcon, 
@@ -169,6 +169,7 @@ const statusData = ref({
 const isLoading = ref(false);
 const error = ref(null);
 const logs = ref([]);
+const activityContainer = ref(null);
 let socket = null;
 
 // Computed
@@ -182,6 +183,27 @@ const proxyAddress = computed(() => statusData.value.proxy_address || 'socks5://
 
 const warpMode = computed(() => statusData.value.warp_mode || 'proxy');
 const backend = computed(() => statusData.value.backend || 'usque');
+
+// Show last 15 logs, newest at bottom (natural reading order)
+const recentLogs = computed(() => logs.value.slice(-15));
+
+// Extract time portion from timestamp like "12:13:15" or "2026-02-11 12:13:15"
+const formatTime = (ts) => {
+  if (!ts) return '';
+  // If it contains a space (date + time), take the time part
+  const parts = ts.split(' ');
+  const timePart = parts.length > 1 ? parts[parts.length - 1] : ts;
+  // Return HH:MM:SS (strip milliseconds if present)
+  return timePart.split('.')[0];
+};
+
+const scrollActivity = () => {
+  nextTick(() => {
+    if (activityContainer.value) {
+      activityContainer.value.scrollTop = activityContainer.value.scrollHeight;
+    }
+  });
+};
 
 // API Helpers
 const apiCall = async (method, url, data = null) => {
@@ -247,6 +269,7 @@ const connectWebSocket = () => {
     } else if (message.type === 'log') {
       logs.value.push(message.data);
       if (logs.value.length > 50) logs.value.shift();
+      scrollActivity();
     }
   };
 
