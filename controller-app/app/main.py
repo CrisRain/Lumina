@@ -8,12 +8,41 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
+import json
 
 from .warp_controller import WarpController
 from .kernel_version_manager import KernelVersionManager
 
-# Configuration
-SOCKS5_PORT = 1080
+# ---- Port Configuration ----
+# Priority: env var > config file > default
+_PORT_CONFIG_FILE = os.getenv("WARP_PORT_CONFIG", "/var/lib/warp/ports.json")
+
+def _load_port_config() -> dict:
+    """Load port config from persisted file, falling back to env / defaults."""
+    cfg = {}
+    try:
+        if os.path.isfile(_PORT_CONFIG_FILE):
+            with open(_PORT_CONFIG_FILE, "r") as f:
+                cfg = json.load(f)
+    except Exception:
+        pass
+    return {
+        "socks5_port": int(os.getenv("SOCKS5_PORT", cfg.get("socks5_port", 1080))),
+        "panel_port": int(os.getenv("PANEL_PORT", cfg.get("panel_port", 8000))),
+    }
+
+def _save_port_config(socks5_port: int, panel_port: int):
+    """Persist port config to disk so it survives restarts."""
+    try:
+        os.makedirs(os.path.dirname(_PORT_CONFIG_FILE), exist_ok=True)
+        with open(_PORT_CONFIG_FILE, "w") as f:
+            json.dump({"socks5_port": socks5_port, "panel_port": panel_port}, f, indent=2)
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Failed to save port config: {e}")
+
+_port_cfg = _load_port_config()
+SOCKS5_PORT = _port_cfg["socks5_port"]
+PANEL_PORT = _port_cfg["panel_port"]
 
 # Limit thread pool to avoid unbounded thread creation
 _thread_pool = ThreadPoolExecutor(max_workers=4)
@@ -125,8 +154,8 @@ app.add_middleware(
 # Initialize controller on startup
 @app.on_event("startup")
 async def init_controller():
-    logger.info("Initializing WARP controller...")
-    controller = WarpController.get_instance()
+    logger.info(f"Initializing WARP controller (SOCKS5={SOCKS5_PORT}, Panel={PANEL_PORT})...")
+    controller = WarpController.get_instance(socks5_port=SOCKS5_PORT)
     
     # Attempt to connect/start backend at startup
     logger.info("Starting WARP backend...")
@@ -302,6 +331,78 @@ async def set_endpoint(request: dict):
              raise HTTPException(status_code=500, detail="Failed to set endpoint")
     else:
         raise HTTPException(status_code=501, detail="Backend does not support custom endpoints")
+
+
+@app.get("/api/config/ports")
+async def get_ports():
+    """Get current port configuration"""
+    return {
+        "socks5_port": SOCKS5_PORT,
+        "panel_port": PANEL_PORT,
+    }
+
+
+@app.post("/api/config/ports")
+async def set_ports(request: dict):
+    """
+    Update port configuration.
+    - socks5_port: takes effect after reconnect
+    - panel_port: takes effect after service restart
+    """
+    global SOCKS5_PORT, PANEL_PORT
+
+    new_socks5 = request.get("socks5_port")
+    new_panel = request.get("panel_port")
+
+    # Validate
+    try:
+        if new_socks5 is not None:
+            new_socks5 = int(new_socks5)
+            if not (1 <= new_socks5 <= 65535):
+                raise ValueError
+        if new_panel is not None:
+            new_panel = int(new_panel)
+            if not (1 <= new_panel <= 65535):
+                raise ValueError
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid port number (must be 1-65535)")
+
+    socks5_changed = new_socks5 is not None and new_socks5 != SOCKS5_PORT
+    panel_changed = new_panel is not None and new_panel != PANEL_PORT
+
+    final_socks5 = new_socks5 if new_socks5 is not None else SOCKS5_PORT
+    final_panel = new_panel if new_panel is not None else PANEL_PORT
+
+    # Persist
+    _save_port_config(final_socks5, final_panel)
+
+    result = {
+        "success": True,
+        "socks5_port": final_socks5,
+        "panel_port": final_panel,
+        "socks5_changed": socks5_changed,
+        "panel_changed": panel_changed,
+        "restart_required": panel_changed,
+    }
+
+    # Apply SOCKS5 port change immediately (reconnect)
+    if socks5_changed:
+        SOCKS5_PORT = final_socks5
+        logger.info(f"SOCKS5 port changed to {final_socks5}, reconnecting...")
+
+        controller = WarpController.get_instance()
+        await controller.disconnect()
+
+        # Update controller port and reconnect
+        WarpController.update_socks5_port(final_socks5)
+        await asyncio.sleep(1)
+        await controller.connect()
+
+    if panel_changed:
+        PANEL_PORT = final_panel
+        logger.info(f"Panel port changed to {final_panel} — will take effect after restart")
+
+    return result
 
 
 @app.post("/api/config/mode")

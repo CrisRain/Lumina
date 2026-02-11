@@ -22,6 +22,10 @@ export NEEDRESTART_SUSPEND=1
 PROJECT_ROOT=$(pwd)
 echo -e "Installing from: ${PROJECT_ROOT}"
 
+# Configurable port defaults
+PANEL_PORT=${PANEL_PORT:-8000}
+SOCKS5_PORT=${SOCKS5_PORT:-1080}
+
 # 1. Install System Dependencies
 echo -e "${GREEN}[1/8] Installing system dependencies...${NC}"
 apt-get update -qq
@@ -108,7 +112,7 @@ STATIC_DIR="${PROJECT_ROOT}/controller-app/static"
 
 cat > /etc/supervisor/conf.d/warppool.conf <<SUPERVISOREOF
 [program:warppool-api]
-command=${VENV_UVICORN} app.main:app --host 0.0.0.0 --port 8000
+command=${VENV_UVICORN} app.main:app --host 0.0.0.0 --port ${PANEL_PORT}
 directory=${CONTROLLER_DIR}
 user=root
 autostart=true
@@ -118,7 +122,7 @@ redirect_stderr=true
 stdout_logfile=/var/log/warppool/api.log
 stdout_logfile_maxbytes=10MB
 stdout_logfile_backups=3
-environment=STATIC_DIR="${STATIC_DIR}",PYTHONUNBUFFERED="1"
+environment=STATIC_DIR="${STATIC_DIR}",PYTHONUNBUFFERED="1",PANEL_PORT="${PANEL_PORT}",SOCKS5_PORT="${SOCKS5_PORT}"
 
 [program:warp-svc]
 command=/usr/bin/warp-svc
@@ -130,7 +134,7 @@ stdout_logfile=/dev/null
 priority=5
 
 [program:usque]
-command=/usr/local/bin/usque -c /var/lib/warp/config.json socks -b 0.0.0.0 -p 1080
+command=/usr/local/bin/usque -c /var/lib/warp/config.json socks -b 0.0.0.0 -p ${SOCKS5_PORT}
 user=root
 autostart=false
 autorestart=true
@@ -148,7 +152,7 @@ stdout_logfile=/dev/null
 priority=10
 
 [program:socat]
-command=/usr/bin/socat TCP-LISTEN:1080,reuseaddr,bind=0.0.0.0,fork TCP:127.0.0.1:40001
+command=/usr/bin/socat TCP-LISTEN:${SOCKS5_PORT},reuseaddr,bind=0.0.0.0,fork TCP:127.0.0.1:40001
 user=root
 autostart=false
 autorestart=true
@@ -175,5 +179,5 @@ echo ""
 echo -e "${GREEN}=== Installation Complete ===${NC}"
 supervisorctl status
 echo ""
-echo -e "Web UI: ${GREEN}http://localhost:8000${NC}"
-echo -e "SOCKS5: ${GREEN}socks5://127.0.0.1:1080${NC} (after connecting)"
+echo -e "Web UI: ${GREEN}http://localhost:${PANEL_PORT}${NC}"
+echo -e "SOCKS5: ${GREEN}socks5://127.0.0.1:${SOCKS5_PORT}${NC} (after connecting)"

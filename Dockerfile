@@ -67,7 +67,9 @@ COPY --from=downloader /tmp/usque /usr/local/bin/usque
 # ---- Python app setup ----
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
-    WARP_DATA_DIR=/app/data
+    WARP_DATA_DIR=/app/data \
+    SOCKS5_PORT=1080 \
+    PANEL_PORT=8000
 
 # Install Python deps (separate layer for caching)
 COPY controller-app/requirements.txt .
@@ -88,12 +90,12 @@ COPY controller-app/app /app/app
 COPY --from=frontend-build /build/dist /app/static
 
 # ---- Ports ----
-# 8000: Web UI + API
-# 1080: SOCKS5 Proxy
+# 8000: Web UI + API (default, configurable via PANEL_PORT)
+# 1080: SOCKS5 Proxy (default, configurable via SOCKS5_PORT)
 EXPOSE 8000 1080
 
 # ---- Health check ----
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:8000/api/status || exit 1
+    CMD curl -f http://localhost:${PANEL_PORT:-8000}/api/status || exit 1
 
 CMD ["/app/entrypoint.sh"]

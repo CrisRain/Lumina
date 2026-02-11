@@ -41,6 +41,71 @@
         </div>
       </div>
 
+      <!-- Port Configuration -->
+      <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 md:col-span-2">
+        <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+          <ServerStackIcon class="w-5 h-5 text-violet-500" />
+          Port Configuration
+        </h3>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <!-- SOCKS5 Port -->
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">SOCKS5 Proxy Port</label>
+            <p class="text-xs text-gray-500 mb-3">Port for SOCKS5 proxy connections. Default: 1080.</p>
+            <div class="relative flex items-center">
+              <input 
+                v-model.number="socks5Port" 
+                type="number" 
+                min="1" max="65535"
+                placeholder="1080" 
+                class="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-violet-500 focus:ring-2 focus:ring-violet-100 outline-none transition-all font-mono text-sm"
+                @keyup.enter="savePorts"
+                :disabled="isProcessing"
+              />
+            </div>
+          </div>
+
+          <!-- Panel Port -->
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Panel Port</label>
+            <p class="text-xs text-gray-500 mb-3">Port for Web UI and API. Default: 8000.</p>
+            <div class="relative flex items-center">
+              <input 
+                v-model.number="panelPort" 
+                type="number" 
+                min="1" max="65535"
+                placeholder="8000" 
+                class="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-violet-500 focus:ring-2 focus:ring-violet-100 outline-none transition-all font-mono text-sm"
+                @keyup.enter="savePorts"
+                :disabled="isProcessing"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4 flex items-center justify-between">
+          <p class="text-[10px] text-gray-400">
+            SOCKS5 port changes take effect after reconnect. Panel port changes require a service restart.
+          </p>
+          <button 
+            @click="savePorts"
+            :disabled="isProcessing || (!portsChanged)"
+            class="px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {{ isProcessing ? 'SAVING...' : 'SAVE PORTS' }}
+          </button>
+        </div>
+
+        <!-- Restart warning -->
+        <div v-if="restartRequired" class="mt-3 p-3 bg-amber-50 rounded-xl border border-amber-200">
+          <p class="text-xs text-amber-700 flex items-center gap-1.5">
+            <ExclamationTriangleIcon class="w-4 h-4 flex-shrink-0" />
+            Panel port changed. Please restart the service for changes to take effect.
+          </p>
+        </div>
+      </div>
+
       <!-- Protocol Settings -->
       <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
         <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
@@ -104,14 +169,37 @@ import axios from 'axios';
 import { 
   GlobeAltIcon, 
   WrenchScrewdriverIcon,
-  ArrowPathIcon
+  ArrowPathIcon,
+  ExclamationTriangleIcon
 } from '@heroicons/vue/24/outline';
+import { ShieldCheckIcon, ServerStackIcon } from '@heroicons/vue/24/solid';
 
 const customEndpoint = ref('');
 const isProcessing = ref(false);
 const isRotating = ref(false);
 const statusData = ref({});
+const restartRequired = ref(false);
 let socket = null;
+
+// Port config (loaded from API)
+const socks5Port = ref(1080);
+const panelPort = ref(8000);
+const savedSocks5Port = ref(1080);
+const savedPanelPort = ref(8000);
+
+const portsChanged = computed(() => {
+  return socks5Port.value !== savedSocks5Port.value || panelPort.value !== savedPanelPort.value;
+});
+
+const currentProtocol = computed(() => {
+  return (statusData.value.warp_protocol || 'MASQUE').toUpperCase();
+});
+
+const canSwitchProtocol = computed(() => {
+  const backend = statusData.value.backend || 'usque';
+  const mode = statusData.value.warp_mode || 'proxy';
+  return backend === 'official' && mode === 'tun';
+});
 
 const apiCall = async (method, url, data = null) => {
   try {
@@ -123,9 +211,47 @@ const apiCall = async (method, url, data = null) => {
   }
 };
 
+// Load port config
+const loadPorts = async () => {
+  const data = await apiCall('get', '/api/config/ports');
+  if (data) {
+    socks5Port.value = data.socks5_port;
+    panelPort.value = data.panel_port;
+    savedSocks5Port.value = data.socks5_port;
+    savedPanelPort.value = data.panel_port;
+  }
+};
+
+const savePorts = async () => {
+  if (!portsChanged.value) return;
+  isProcessing.value = true;
+  
+  const data = await apiCall('post', '/api/config/ports', {
+    socks5_port: socks5Port.value,
+    panel_port: panelPort.value,
+  });
+  
+  if (data && data.success) {
+    savedSocks5Port.value = data.socks5_port;
+    savedPanelPort.value = data.panel_port;
+    if (data.restart_required) {
+      restartRequired.value = true;
+    }
+  }
+  
+  setTimeout(() => isProcessing.value = false, 1000);
+};
+
 const setEndpoint = async () => {
   isProcessing.value = true;
   await apiCall('post', '/api/config/endpoint', { endpoint: customEndpoint.value });
+  setTimeout(() => isProcessing.value = false, 1000);
+};
+
+const toggleProtocol = async () => {
+  isProcessing.value = true;
+  const newProtocol = currentProtocol.value === 'MASQUE' ? 'wireguard' : 'masque';
+  await apiCall('post', '/api/config/protocol', { protocol: newProtocol });
   setTimeout(() => isProcessing.value = false, 1000);
 };
 
@@ -154,6 +280,7 @@ const connectWebSocket = () => {
 
 onMounted(() => {
   connectWebSocket();
+  loadPorts();
 });
 
 onUnmounted(() => {

@@ -18,24 +18,28 @@ class WarpController:
     
     _instance: Union[UsqueController, OfficialController, None] = None
     _current_backend: str = None
+    _socks5_port: int = 1080
     
     @classmethod
-    def get_instance(cls) -> Union[UsqueController, OfficialController]:
+    def get_instance(cls, socks5_port: int = None) -> Union[UsqueController, OfficialController]:
         """
         Get the current WARP controller instance.
         Creates new instance if backend changed or doesn't exist.
         """
+        if socks5_port is not None:
+            cls._socks5_port = socks5_port
+
         backend = os.getenv("WARP_BACKEND", "usque").lower()
         
         # Create new instance if needed
         if cls._instance is None or cls._current_backend != backend:
-            logger.info(f"Initializing WARP controller with backend: {backend}")
+            logger.info(f"Initializing WARP controller with backend: {backend} (SOCKS5 port: {cls._socks5_port})")
             cls._current_backend = backend
             
             if backend == "usque":
-                cls._instance = UsqueController()
+                cls._instance = UsqueController(socks5_port=cls._socks5_port)
             elif backend == "official":
-                cls._instance = OfficialController()
+                cls._instance = OfficialController(socks5_port=cls._socks5_port)
             else:
                 raise ValueError(f"Unknown WARP_BACKEND: {backend}. Use 'usque' or 'official'")
         
@@ -74,12 +78,13 @@ class WarpController:
             except Exception as e:
                 logger.warning(f"Error disconnecting current backend: {e}")
         
-        # Ensure port 1080 is released before switching
-        logger.info("Waiting for port 1080 to be released...")
+        # Ensure SOCKS5 port is released before switching
+        port = cls._socks5_port
+        logger.info(f"Waiting for port {port} to be released...")
         for _ in range(10): # Wait up to 5 seconds
             try:
                 # Use asyncio to check port
-                reader, writer = await asyncio.open_connection('127.0.0.1', 1080)
+                reader, writer = await asyncio.open_connection('127.0.0.1', port)
                 writer.close()
                 await writer.wait_closed()
                 # Connected means port is busy
@@ -92,8 +97,8 @@ class WarpController:
         try:
             import psutil
             for conn in psutil.net_connections():
-                if conn.laddr.port == 1080 and conn.status == 'LISTEN':
-                    logger.warning(f"Port 1080 still in use by PID {conn.pid}, killing...")
+                if conn.laddr.port == port and conn.status == 'LISTEN':
+                    logger.warning(f"Port {port} still in use by PID {conn.pid}, killing...")
                     try:
                         psutil.Process(conn.pid).kill()
                     except:
@@ -135,3 +140,11 @@ class WarpController:
                 pass
         cls._instance = None
         cls._current_backend = None
+
+    @classmethod
+    def update_socks5_port(cls, port: int):
+        """Update the SOCKS5 port on the current controller instance."""
+        cls._socks5_port = port
+        if cls._instance and hasattr(cls._instance, 'socks5_port'):
+            cls._instance.socks5_port = port
+            logger.info(f"Updated controller SOCKS5 port to {port}")

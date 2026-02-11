@@ -37,6 +37,7 @@ class OfficialController:
         self._saved_gateway = None
         self._saved_interface = None
         self._saved_ip = None
+        self._firewall_snapshot = None  # 连接 TUN 前采集的防火墙快照
 
     async def _run_command(self, command: str, timeout=None):
         try:
@@ -207,6 +208,9 @@ class OfficialController:
                 logger.error("Failed to start official WARP services (TUN)")
                 return False
 
+        # 在 WARP 修改路由/防火墙之前，先采集现有防火墙快照
+        self._firewall_snapshot = await self._tun_manager.capture_firewall_snapshot()
+
         # Save original route BEFORE warp-cli connect modifies routing
         self._saved_gateway, self._saved_interface, self._saved_ip = await self._tun_manager.get_default_route()
 
@@ -366,9 +370,12 @@ class OfficialController:
     # ------------------------------------------------------------------
 
     async def _ensure_socat(self):
-        """Ensure socat service is running (proxy mode only)"""
+        """Ensure socat service is running with the correct SOCKS5 port (proxy mode only)"""
         if self._mode != "proxy":
             return
+
+        # Update supervisor config if port differs from default
+        await self._update_supervisor_socat_port()
 
         sys_active = False
         try:
@@ -382,8 +389,11 @@ class OfficialController:
         if sys_active and port_open:
             return
 
-        logger.info("Starting socat service...")
+        logger.info(f"Starting socat service (port {self.socks5_port})...")
         try:
+            # Stop first to pick up config changes
+            await self._run_command("supervisorctl stop socat")
+            await asyncio.sleep(0.3)
             await self._run_command("supervisorctl start socat")
             await asyncio.sleep(1)
             if not await self._is_port_open(self.socks5_port):
@@ -391,6 +401,35 @@ class OfficialController:
                 await asyncio.sleep(2)
         except Exception as e:
             logger.error(f"Error starting socat: {e}")
+
+    async def _update_supervisor_socat_port(self):
+        """Update the socat supervisor config to use the current socks5_port."""
+        import re as _re
+        conf_paths = [
+            "/etc/supervisor/conf.d/supervisord.conf",
+            "/etc/supervisor/conf.d/warppool.conf",
+        ]
+        for conf_path in conf_paths:
+            if not os.path.isfile(conf_path):
+                continue
+            try:
+                with open(conf_path, "r") as f:
+                    content = f.read()
+
+                new_cmd = f"command=/usr/bin/socat TCP-LISTEN:{self.socks5_port},reuseaddr,bind=0.0.0.0,fork TCP:127.0.0.1:40001"
+                updated = _re.sub(
+                    r"command=/usr/bin/socat TCP-LISTEN:\d+,reuseaddr,bind=0\.0\.0\.0,fork TCP:127\.0\.0\.1:40001",
+                    new_cmd,
+                    content,
+                )
+                if updated != content:
+                    with open(conf_path, "w") as f:
+                        f.write(updated)
+                    await self._run_command("supervisorctl reread")
+                    await self._run_command("supervisorctl update")
+                    logger.info(f"Updated socat supervisor config to port {self.socks5_port}")
+            except Exception as e:
+                logger.warning(f"Failed to update socat config in {conf_path}: {e}")
 
     # ------------------------------------------------------------------
     # TUN routing helpers (Delegated to LinuxTunManager)
@@ -410,22 +449,26 @@ class OfficialController:
             # 1. Setup policy routing (bypass)
             await self._tun_manager.setup_bypass_routing(gw, iface, ip)
 
-            # 2. Add nftables rules to allow traffic on eth0
-            # Allow: API (8000) only. SOCKS5 (1080) proxy disabled in TUN mode.
-            await self._tun_manager.apply_nftables_allow_rules(iface, [8000])
+            # 2. Add nftables rules: panel port + 快照中原有的放行规则
+            panel_port = int(os.getenv("PANEL_PORT", 8000))
+            await self._tun_manager.apply_nftables_allow_rules(
+                iface, [panel_port], snapshot=self._firewall_snapshot
+            )
 
             logger.info(f"TUN policy route applied: from {ip} via {gw} dev {iface}")
         except Exception as e:
             logger.error(f"Failed to apply TUN routing: {e}")
 
     async def _cleanup_tun_routing(self):
-        """Remove policy routing rules, table 100, iptables connmark, and nftables rules."""
-        # Clean up nftables rules first
-        if self._saved_interface:
-            await self._tun_manager.cleanup_nftables_rules(self._saved_interface, [8000])
+        """Remove policy routing rules, table 100, and nftables rules."""
+        # Clean up all warppool nftables rules (by prefix)
+        await self._tun_manager.cleanup_nftables_rules()
         
         # Clean up bypass routing
         await self._tun_manager.cleanup_bypass_routing(self._saved_ip)
+        
+        # Reset snapshot
+        self._firewall_snapshot = None
         logger.info("TUN routing cleanup complete")
 
     # ------------------------------------------------------------------

@@ -151,7 +151,10 @@ class UsqueController:
     async def _connect_proxy(self) -> bool:
         """Start usque SOCKS5 proxy via supervisor"""
         try:
-            logger.info("Starting usque service (proxy mode)...")
+            logger.info(f"Starting usque service (proxy mode, port {self.socks5_port})...")
+            # Update supervisor config if port changed
+            await self._update_supervisor_usque_port()
+
             # Ensure clean state (clear FATAL/BACKOFF from previous runs)
             await self._run_command("supervisorctl stop usque")
             await asyncio.sleep(0.5)
@@ -172,6 +175,36 @@ class UsqueController:
         except Exception as e:
             logger.error(f"Failed to start usque proxy: {e}")
             return False
+
+    async def _update_supervisor_usque_port(self):
+        """Update the usque supervisor config to use the current socks5_port."""
+        import re as _re
+        conf_paths = [
+            "/etc/supervisor/conf.d/supervisord.conf",
+            "/etc/supervisor/conf.d/warppool.conf",
+        ]
+        for conf_path in conf_paths:
+            if not os.path.isfile(conf_path):
+                continue
+            try:
+                with open(conf_path, "r") as f:
+                    content = f.read()
+
+                # Match: command=.../usque -c ... socks -b 0.0.0.0 -p <PORT>
+                new_cmd = f"command=/usr/local/bin/usque -c /var/lib/warp/config.json socks -b 0.0.0.0 -p {self.socks5_port}"
+                updated = _re.sub(
+                    r"command=/usr/local/bin/usque -c /var/lib/warp/config\.json socks -b 0\.0\.0\.0 -p \d+",
+                    new_cmd,
+                    content,
+                )
+                if updated != content:
+                    with open(conf_path, "w") as f:
+                        f.write(updated)
+                    await self._run_command("supervisorctl reread")
+                    await self._run_command("supervisorctl update")
+                    logger.info(f"Updated usque supervisor config to port {self.socks5_port}")
+            except Exception as e:
+                logger.warning(f"Failed to update usque config in {conf_path}: {e}")
 
     async def _connect_tun(self) -> bool:
         """Start usque nativetun + set up routing."""

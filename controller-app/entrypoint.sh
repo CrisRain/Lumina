@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+# Port defaults (configurable via docker env)
+export PANEL_PORT="${PANEL_PORT:-8000}"
+export SOCKS5_PORT="${SOCKS5_PORT:-1080}"
+
 # Ensure TUN device exists (required for TUN mode)
 mkdir -p /dev/net
 if [ ! -e /dev/net/tun ]; then
@@ -21,6 +25,8 @@ touch /var/log/warppool-api.log
 
 # Tail the log in background so docker logs can see it
 tail -f /var/log/warppool-api.log &
+
+echo "Starting WarpPanel (Panel: ${PANEL_PORT}, SOCKS5: ${SOCKS5_PORT})"
 
 # Start supervisor (which manages warppool-api, usque, socat)
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
