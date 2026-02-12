@@ -184,6 +184,44 @@ class LinuxTunManager:
             await cls._run_command(["ip", "rule", "del", "fwmark", "0x200", "lookup", str(table_id)])
             await cls._run_command(["ip", "rule", "add", "fwmark", "0x200", "lookup", str(table_id), "priority", "4850"])
 
+            # 自动识别 Docker 映射端口并设置 RETURN 规则，避免被打上 fwmark 导致回包走 table 100
+            if shutil.which("docker") and shutil.which("iptables"):
+                # 获取所有容器的端口映射信息
+                rc, stdout, _ = await cls._run_command(
+                    ["docker", "ps", "--format", "{{.Ports}}"]
+                )
+                if rc == 0 and stdout:
+                    for line in stdout.split('\n'):
+                        # 格式示例: 0.0.0.0:22330->80/tcp, :::22330->80/tcp
+                        for part in line.split(','):
+                            part = part.strip()
+                            if '->' not in part:
+                                continue
+                            
+                            host_part = part.split('->')[0]
+                            # 提取端口，可能含 IP (0.0.0.0:8080) 或仅端口 (8080)
+                            if ':' in host_part:
+                                port_str = host_part.rsplit(':', 1)[-1]
+                            else:
+                                port_str = host_part
+                                
+                            try:
+                                port = int(port_str)
+                                proto = 'udp' if '/udp' in part else 'tcp'
+                                
+                                logger.info(f"Whitelisting Docker port: {proto}/{port} from fwmark")
+                                
+                                # 在 mangle 表 PREROUTING 链最前面插入 RETURN 规则
+                                # 这样流量就不会被打上 0x200 标记，从而走 main 表正常回包
+                                await cls._run_command([
+                                    "iptables", "-t", "mangle", "-I", "PREROUTING", 
+                                    "-p", proto, "--dport", str(port), 
+                                    "-m", "comment", "--comment", f"warppool-skip-mark-{proto}-{port}",
+                                    "-j", "RETURN"
+                                ])
+                            except ValueError:
+                                continue
+
             # 设置 iptables mangle 规则，标记从物理接口进入的连接
             if shutil.which("iptables"):
                 # 1. 标记从物理接口进入的新连接
@@ -246,8 +284,15 @@ class LinuxTunManager:
                 rc, stdout, _ = await cls._run_command(["iptables-save", "-t", "mangle"])
                 if rc == 0:
                     for line in stdout.split('\n'):
+                        # 清理 warppool-mark-in
                         if "warppool-mark-in" in line and "-A" in line:
-                            # 构造删除命令: 把 -A 换成 -D
+                            parts = line.split()
+                            if parts[0] == "-A":
+                                cmd = ["iptables", "-t", "mangle", "-D"] + parts[1:]
+                                await cls._run_command(cmd)
+                        
+                        # 清理 warppool-skip-mark
+                        if "warppool-skip-mark" in line and "-A" in line:
                             parts = line.split()
                             if parts[0] == "-A":
                                 cmd = ["iptables", "-t", "mangle", "-D"] + parts[1:]
