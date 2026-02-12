@@ -184,59 +184,71 @@ class LinuxTunManager:
             await cls._run_command(["ip", "rule", "del", "fwmark", "0x200", "lookup", str(table_id)])
             await cls._run_command(["ip", "rule", "add", "fwmark", "0x200", "lookup", str(table_id), "priority", "4850"])
 
-            # 自动识别 Docker 映射端口并设置 RETURN 规则，避免被打上 fwmark 导致回包走 table 100
-            if shutil.which("docker") and shutil.which("iptables"):
-                # 获取所有容器的端口映射信息
-                rc, stdout, _ = await cls._run_command(
-                    ["docker", "ps", "--format", "{{.Ports}}"]
-                )
-                if rc == 0 and stdout:
-                    for line in stdout.split('\n'):
-                        # 格式示例: 0.0.0.0:22330->80/tcp, :::22330->80/tcp
-                        for part in line.split(','):
-                            part = part.strip()
-                            if '->' not in part:
-                                continue
-                            
-                            host_part = part.split('->')[0]
-                            # 提取端口，可能含 IP (0.0.0.0:8080) 或仅端口 (8080)
-                            if ':' in host_part:
-                                port_str = host_part.rsplit(':', 1)[-1]
-                            else:
-                                port_str = host_part
-                                
-                            try:
-                                port = int(port_str)
-                                proto = 'udp' if '/udp' in part else 'tcp'
-                                
-                                logger.info(f"Whitelisting Docker port: {proto}/{port} from fwmark")
-                                
-                                # 在 mangle 表 PREROUTING 链最前面插入 RETURN 规则
-                                # 这样流量就不会被打上 0x200 标记，从而走 main 表正常回包
-                                await cls._run_command([
-                                    "iptables", "-t", "mangle", "-I", "PREROUTING", 
-                                    "-p", proto, "--dport", str(port), 
-                                    "-m", "comment", "--comment", f"warppool-skip-mark-{proto}-{port}",
-                                    "-j", "RETURN"
-                                ])
-                            except ValueError:
-                                continue
-
             # 设置 iptables mangle 规则，标记从物理接口进入的连接
             if shutil.which("iptables"):
+                rc, stdout, _ = await cls._run_command(["iptables-save", "-t", "mangle"])
+                if rc == 0:
+                    for line in stdout.split('\n'):
+                        if "warppool-mark-in" in line and "-A" in line:
+                            parts = line.split()
+                            if parts[0] == "-A":
+                                cmd = ["iptables", "-t", "mangle", "-D"] + parts[1:]
+                                await cls._run_command(cmd)
+                        if "warppool-restore-mark" in line and "-A" in line:
+                            parts = line.split()
+                            if parts[0] == "-A":
+                                cmd = ["iptables", "-t", "mangle", "-D"] + parts[1:]
+                                await cls._run_command(cmd)
+                        if "warppool-skip-mark" in line and "-A" in line:
+                            parts = line.split()
+                            if parts[0] == "-A":
+                                cmd = ["iptables", "-t", "mangle", "-D"] + parts[1:]
+                                await cls._run_command(cmd)
+
                 # 1. 标记从物理接口进入的新连接
                 await cls._run_command([
-                    "iptables", "-t", "mangle", "-I", "PREROUTING", "-i", iface, 
-                    "-m", "comment", "--comment", "warppool-mark-in", 
-                    "-j", "CONNMARK", "--set-mark", "0x200"
-                ])
-                # 2. 恢复标记 (对所有包，如果连接已有标记则恢复)
-                # 注意：这里不仅针对物理接口，而是所有接口，因为容器回包是从 docker0/br-xxx 进来的
-                await cls._run_command([
-                    "iptables", "-t", "mangle", "-I", "PREROUTING", 
-                    "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", 
-                    "-m", "comment", "--comment", "warppool-restore-mark", 
+                    "iptables", "-t", "mangle", "-I", "PREROUTING", "1",
+                    "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
+                    "-m", "comment", "--comment", "warppool-restore-mark",
                     "-j", "CONNMARK", "--restore-mark"
+                ])
+                skip_rule_pos = 2
+
+                if shutil.which("docker"):
+                    rc, stdout, _ = await cls._run_command(
+                        ["docker", "ps", "--format", "{{.Ports}}"]
+                    )
+                    if rc == 0 and stdout:
+                        for line in stdout.split('\n'):
+                            for part in line.split(','):
+                                part = part.strip()
+                                if '->' not in part:
+                                    continue
+
+                                host_part = part.split('->')[0]
+                                if ':' in host_part:
+                                    port_str = host_part.rsplit(':', 1)[-1]
+                                else:
+                                    port_str = host_part
+
+                                try:
+                                    port = int(port_str)
+                                    proto = 'udp' if '/udp' in part else 'tcp'
+                                    await cls._run_command([
+                                        "iptables", "-t", "mangle", "-I", "PREROUTING", str(skip_rule_pos),
+                                        "-p", proto, "--dport", str(port),
+                                        "-m", "comment", "--comment", f"warppool-skip-mark-{proto}-{port}",
+                                        "-j", "RETURN"
+                                    ])
+                                    skip_rule_pos += 1
+                                except ValueError:
+                                    continue
+
+                await cls._run_command([
+                    "iptables", "-t", "mangle", "-I", "PREROUTING", str(skip_rule_pos),
+                    "-i", iface,
+                    "-m", "comment", "--comment", "warppool-mark-in",
+                    "-j", "CONNMARK", "--set-mark", "0x200"
                 ])
 
             for subnet in cls.PRIVATE_SUBNETS:
