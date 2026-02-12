@@ -214,6 +214,7 @@ class LinuxTunManager:
                 ])
                 skip_rule_pos = 2
 
+                skip_ports = set()
                 if shutil.which("docker"):
                     rc, stdout, _ = await cls._run_command(
                         ["docker", "ps", "--format", "{{.Ports}}"]
@@ -234,15 +235,25 @@ class LinuxTunManager:
                                 try:
                                     port = int(port_str)
                                     proto = 'udp' if '/udp' in part else 'tcp'
-                                    await cls._run_command([
-                                        "iptables", "-t", "mangle", "-I", "PREROUTING", str(skip_rule_pos),
-                                        "-p", proto, "--dport", str(port),
-                                        "-m", "comment", "--comment", f"warppool-skip-mark-{proto}-{port}",
-                                        "-j", "RETURN"
-                                    ])
-                                    skip_rule_pos += 1
+                                    skip_ports.add((proto, port))
                                 except ValueError:
                                     continue
+
+                for proto, port in sorted(skip_ports, key=lambda item: (item[0], item[1])):
+                    await cls._run_command([
+                        "iptables", "-t", "mangle", "-I", "PREROUTING", str(skip_rule_pos),
+                        "-p", proto, "--dport", str(port),
+                        "-m", "comment", "--comment", f"warppool-skip-mark-{proto}-{port}",
+                        "-j", "CONNMARK", "--set-mark", "0x0"
+                    ])
+                    skip_rule_pos += 1
+                    await cls._run_command([
+                        "iptables", "-t", "mangle", "-I", "PREROUTING", str(skip_rule_pos),
+                        "-p", proto, "--dport", str(port),
+                        "-m", "comment", "--comment", f"warppool-skip-mark-{proto}-{port}",
+                        "-j", "RETURN"
+                    ])
+                    skip_rule_pos += 1
 
                 await cls._run_command([
                     "iptables", "-t", "mangle", "-I", "PREROUTING", str(skip_rule_pos),
