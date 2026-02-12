@@ -128,7 +128,7 @@
             </router-link>
           </div>
           
-          <div ref="activityContainer" class="flex-1 bg-gray-900 rounded-xl overflow-y-auto custom-scrollbar" style="max-height: 320px;">
+          <div ref="activityContainer" class="bg-gray-900 rounded-xl overflow-y-auto custom-scrollbar h-60">
             <div class="p-4 space-y-1.5">
               <div v-if="logs.length === 0" class="text-gray-600 text-xs text-center py-10">No activity recorded</div>
               <div v-for="(log, i) in recentLogs" :key="i" class="text-[11px] font-mono leading-relaxed border-l-2 pl-2 py-0.5" :class="getLogColor(log.level)">
