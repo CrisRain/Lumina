@@ -180,13 +180,36 @@ class LinuxTunManager:
                 if subnet:
                     await cls._run_command(["ip", "route", "add", subnet, "dev", iface, "table", str(table_id)])
 
+            # fwmark 策略路由：标记为 0x200 (512) 的包走 table 100
+            await cls._run_command(["ip", "rule", "del", "fwmark", "0x200", "lookup", str(table_id)])
+            await cls._run_command(["ip", "rule", "add", "fwmark", "0x200", "lookup", str(table_id), "priority", "4850"])
+
+            # 设置 iptables mangle 规则，标记从物理接口进入的连接
+            if shutil.which("iptables"):
+                # 1. 标记从物理接口进入的新连接
+                await cls._run_command([
+                    "iptables", "-t", "mangle", "-I", "PREROUTING", "-i", iface, 
+                    "-m", "comment", "--comment", "warppool-mark-in", 
+                    "-j", "CONNMARK", "--set-mark", "0x200"
+                ])
+                # 2. 恢复标记 (对所有包，如果连接已有标记则恢复)
+                # 注意：这里不仅针对物理接口，而是所有接口，因为容器回包是从 docker0/br-xxx 进来的
+                await cls._run_command([
+                    "iptables", "-t", "mangle", "-I", "PREROUTING", 
+                    "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", 
+                    "-m", "comment", "--comment", "warppool-restore-mark", 
+                    "-j", "CONNMARK", "--restore-mark"
+                ])
+
             for subnet in cls.PRIVATE_SUBNETS:
                 await cls._run_command(["ip", "rule", "del", "to", subnet, "lookup", "main"])
                 await cls._run_command(["ip", "rule", "add", "to", subnet, "lookup", "main", "priority", "4900"])
                 
                 # 同时也让来自 Docker/私有网段的流量走原网关 (table 100)，避免回包走 WARP 导致断连
-                await cls._run_command(["ip", "rule", "del", "from", subnet, "lookup", str(table_id)])
-                await cls._run_command(["ip", "rule", "add", "from", subnet, "lookup", str(table_id), "priority", "4950"])
+                # [REVERTED] 不需要强制所有私有网段走物理网关，这会导致容器无法通过 WARP 访问外网。
+                # 改用上面的 fwmark 策略路由，仅针对入站是物理接口的连接的回包走物理网关。
+                # await cls._run_command(["ip", "rule", "del", "from", subnet, "lookup", str(table_id)])
+                # await cls._run_command(["ip", "rule", "add", "from", subnet, "lookup", str(table_id), "priority", "4950"])
 
             await cls._run_command(["ip", "rule", "del", "from", ip, "lookup", str(table_id)])
             await cls._run_command(["ip", "rule", "add", "from", ip, "lookup", str(table_id), "priority", "5000"])
@@ -198,9 +221,41 @@ class LinuxTunManager:
     async def cleanup_bypass_routing(cls, ip: Optional[str], table_id: int = 100):
         """Remove the bypass routing rules and flush the custom table."""
         try:
+            # 清理 fwmark 路由
+            await cls._run_command(["ip", "rule", "del", "fwmark", "0x200", "lookup", str(table_id)])
+
+            # 清理 iptables mangle 规则
+            if shutil.which("iptables"):
+                # 倒序删除以避免索引错乱，或者按 comment 删除
+                # 简单起见，尝试删除特定的规则模式
+                await cls._run_command([
+                    "iptables", "-t", "mangle", "-D", "PREROUTING", 
+                    "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", 
+                    "-m", "comment", "--comment", "warppool-restore-mark", 
+                    "-j", "CONNMARK", "--restore-mark"
+                ])
+                # 由于无法确切知道当时添加时的 interface，这里只能尽力清理，
+                # 实际生产中最好记录下 iface。但在 cleanup_bypass_routing 参数里没 iface。
+                # 我们可以尝试列出规则并 grep comment，或者假设 iface 不变？
+                # 这里暂时不做基于 iface 的删除，因为 iface 参数缺失。
+                # 如果用户环境比较干净，重启服务时会先 stop 再 start，start 时是 -I，
+                # stop 时如果没有清理干净，可能会残留。
+                # 改进：通过 iptables-save | grep warppool 来查找并删除？
+                
+                # 尝试通过 comment 删除 warppool-mark-in (需要遍历或 grep)
+                rc, stdout, _ = await cls._run_command(["iptables-save", "-t", "mangle"])
+                if rc == 0:
+                    for line in stdout.split('\n'):
+                        if "warppool-mark-in" in line and "-A" in line:
+                            # 构造删除命令: 把 -A 换成 -D
+                            parts = line.split()
+                            if parts[0] == "-A":
+                                cmd = ["iptables", "-t", "mangle", "-D"] + parts[1:]
+                                await cls._run_command(cmd)
+
             for subnet in cls.PRIVATE_SUBNETS:
                 await cls._run_command(["ip", "rule", "del", "to", subnet, "lookup", "main", "priority", "4900"])
-                await cls._run_command(["ip", "rule", "del", "from", subnet, "lookup", str(table_id), "priority", "4950"])
+                # await cls._run_command(["ip", "rule", "del", "from", subnet, "lookup", str(table_id), "priority", "4950"])
             if ip:
                 await cls._run_command(["ip", "rule", "del", "from", ip, "lookup", str(table_id)])
             await cls._run_command(["ip", "route", "flush", "table", str(table_id)])
