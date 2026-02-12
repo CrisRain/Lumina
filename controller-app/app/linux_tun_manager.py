@@ -183,6 +183,10 @@ class LinuxTunManager:
             for subnet in cls.PRIVATE_SUBNETS:
                 await cls._run_command(["ip", "rule", "del", "to", subnet, "lookup", "main"])
                 await cls._run_command(["ip", "rule", "add", "to", subnet, "lookup", "main", "priority", "4900"])
+                
+                # 同时也让来自 Docker/私有网段的流量走原网关 (table 100)，避免回包走 WARP 导致断连
+                await cls._run_command(["ip", "rule", "del", "from", subnet, "lookup", str(table_id)])
+                await cls._run_command(["ip", "rule", "add", "from", subnet, "lookup", str(table_id), "priority", "4950"])
 
             await cls._run_command(["ip", "rule", "del", "from", ip, "lookup", str(table_id)])
             await cls._run_command(["ip", "rule", "add", "from", ip, "lookup", str(table_id), "priority", "5000"])
@@ -196,6 +200,7 @@ class LinuxTunManager:
         try:
             for subnet in cls.PRIVATE_SUBNETS:
                 await cls._run_command(["ip", "rule", "del", "to", subnet, "lookup", "main", "priority", "4900"])
+                await cls._run_command(["ip", "rule", "del", "from", subnet, "lookup", str(table_id), "priority", "4950"])
             if ip:
                 await cls._run_command(["ip", "rule", "del", "from", ip, "lookup", str(table_id)])
             await cls._run_command(["ip", "route", "flush", "table", str(table_id)])
