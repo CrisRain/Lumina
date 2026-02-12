@@ -205,58 +205,20 @@ class LinuxTunManager:
                                 cmd = ["iptables", "-t", "mangle", "-D"] + parts[1:]
                                 await cls._run_command(cmd)
 
-                # 1. 标记从物理接口进入的新连接
+                # 1. 对已建立连接的回包恢复 connmark → fwmark，使其走 bypass 路由
                 await cls._run_command([
                     "iptables", "-t", "mangle", "-I", "PREROUTING", "1",
                     "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
                     "-m", "comment", "--comment", "warppool-restore-mark",
                     "-j", "CONNMARK", "--restore-mark"
                 ])
-                skip_rule_pos = 2
 
-                skip_ports = set()
-                if shutil.which("docker"):
-                    rc, stdout, _ = await cls._run_command(
-                        ["docker", "ps", "--format", "{{.Ports}}"]
-                    )
-                    if rc == 0 and stdout:
-                        for line in stdout.split('\n'):
-                            for part in line.split(','):
-                                part = part.strip()
-                                if '->' not in part:
-                                    continue
-
-                                host_part = part.split('->')[0]
-                                if ':' in host_part:
-                                    port_str = host_part.rsplit(':', 1)[-1]
-                                else:
-                                    port_str = host_part
-
-                                try:
-                                    port = int(port_str)
-                                    proto = 'udp' if '/udp' in part else 'tcp'
-                                    skip_ports.add((proto, port))
-                                except ValueError:
-                                    continue
-
-                for proto, port in sorted(skip_ports, key=lambda item: (item[0], item[1])):
-                    await cls._run_command([
-                        "iptables", "-t", "mangle", "-I", "PREROUTING", str(skip_rule_pos),
-                        "-p", proto, "--dport", str(port),
-                        "-m", "comment", "--comment", f"warppool-skip-mark-{proto}-{port}",
-                        "-j", "CONNMARK", "--set-mark", "0x0"
-                    ])
-                    skip_rule_pos += 1
-                    await cls._run_command([
-                        "iptables", "-t", "mangle", "-I", "PREROUTING", str(skip_rule_pos),
-                        "-p", proto, "--dport", str(port),
-                        "-m", "comment", "--comment", f"warppool-skip-mark-{proto}-{port}",
-                        "-j", "RETURN"
-                    ])
-                    skip_rule_pos += 1
-
+                # 2. 标记从物理接口进入的新连接（包括 Docker 端口转发的入站流量）
+                # 所有从物理网卡进来的连接都打上 0x200 标记，确保回包走原网关。
+                # Docker 容器主动发起的出站流量从 docker0 进入 PREROUTING，
+                # 不会匹配 `-i <物理接口>` 条件，因此仍然走 WARP TUN，不受影响。
                 await cls._run_command([
-                    "iptables", "-t", "mangle", "-I", "PREROUTING", str(skip_rule_pos),
+                    "iptables", "-t", "mangle", "-I", "PREROUTING", "2",
                     "-i", iface,
                     "-m", "comment", "--comment", "warppool-mark-in",
                     "-j", "CONNMARK", "--set-mark", "0x200"
