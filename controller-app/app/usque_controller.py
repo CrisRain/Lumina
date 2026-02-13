@@ -295,36 +295,27 @@ class UsqueController:
         else:
             logger.warning("Missing orig_gw/iface/ip, skipping policy route (panel may be inaccessible in TUN mode)")
 
-        # 2. Route WARP endpoint through original gateway (prevent routing loop)
-        if self._saved_gw and self._saved_iface and endpoint:
-            await self._tun_manager.add_static_route(f"{endpoint}/32", self._saved_gw, self._saved_iface)
+        # 2. Host-Only Routing (Concise)
+        # We no longer change the global default route.
+        # Instead, we route ONLY traffic from the host IP into the TUN,
+        # while preserving inbound port access via connection marking.
+        if self._saved_iface and self._saved_ip:
+            await self._tun_manager.setup_host_tun_routing(self._saved_iface, self._saved_ip, tun_name)
+        else:
+             logger.warning("Missing interface/IP information, correct routing cannot be applied.")
 
-        # 3. Set default route through TUN (Safe metric-based)
-        await self._tun_manager.set_default_interface(tun_name)
-        
-        # 4. Host-Only Mode: Route Docker/Private subnets to main table (Bypass TUN)
-        await self._tun_manager.setup_docker_bypass()
-
-        logger.info(f"TUN routing configured: default via {tun_name} (metric 1) [Host-Only Mode]")
+        logger.info(f"TUN routing configured: Host {self._saved_ip} -> {tun_name}")
 
     async def _cleanup_tun_routing(self):
         """Remove TUN routing: policy rule, table 100, endpoint route."""
         # Cleanup bypass routing
         await self._tun_manager.cleanup_bypass_routing(self._saved_ip)
         
-        # Cleanup Docker/Private bypass
-        await self._tun_manager.cleanup_docker_bypass()
-            
-        # Remove default route (if interface still exists, though stopping tun usually removes it)
-        # We try to remove it explicitly to be safe
-        tun_name = await self._tun_manager.get_tun_interface_name() or "tun0"
-        await self._tun_manager.remove_default_interface(tun_name)
+        # Cleanup Host-Only routing
+        if self._saved_iface and self._saved_ip:
+             tun_name = await self._tun_manager.get_tun_interface_name() or "tun0"
+             await self._tun_manager.cleanup_host_tun_routing(self._saved_iface, self._saved_ip, tun_name)
 
-        # Remove endpoint route
-        endpoint = self._get_warp_endpoint()
-        if endpoint:
-            await self._tun_manager.delete_static_route(f"{endpoint}/32")
-        
         # Reset saved state
         self._saved_gw = None
         self._saved_iface = None

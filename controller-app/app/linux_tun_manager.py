@@ -245,83 +245,69 @@ class LinuxTunManager:
             logger.error(f"Error deleting static route {cidr}: {e}")
 
     # ------------------------------------------------------------------
-    # Default interface (TUN)
+    # Host-Only Routing (Concise & Robust)
     # ------------------------------------------------------------------
 
-    async def set_default_interface(self, tun_name: str) -> None:
-        """Add a default route with lower metric (higher priority) via TUN.
+    async def setup_host_tun_routing(self, iface: str, host_ip: str, tun_name: str) -> None:
+        """Configure routing so ONLY host traffic goes through TUN, preserving inbound ports.
 
-        Avoids replacing the existing default route to prevent network loss on crash.
+        Logic:
+        1. Inbound connections on physical iface are marked.
+        2. Marked packets (replies) are routed via main table (bypass TUN).
+        3. Only packets from host_ip are routed via TUN table.
+        4. Global default route remains untouched.
         """
-        try:
-            # Metric 1 is higher priority than typical default routes (usually 100+)
-            cmd = f"ip route add default dev {tun_name} metric 1"
-            rc, _, stderr = await self._exec(cmd)
-            if rc != 0:
-                if "File exists" in stderr:
-                    logger.warning(f"Default route via {tun_name} metric 1 already exists.")
-                else:
-                    logger.error(f"Failed to set default interface to {tun_name}: {stderr}")
-            else:
-                logger.info(f"Default route set to dev {tun_name} metric 1")
-        except Exception as e:
-            logger.error(f"Error setting default interface: {e}")
+        if not iface or not host_ip:
+             return
 
-    async def remove_default_interface(self, tun_name: str) -> None:
-        """Remove the high-priority default route via TUN."""
         try:
-            cmd = f"ip route del default dev {tun_name} metric 1"
-            rc, _, stderr = await self._exec(cmd)
-            if rc != 0 and "No such process" not in stderr:
-                 logger.error(f"Failed to remove default route via {tun_name}: {stderr}")
-            else:
-                 logger.info(f"Default route removed from dev {tun_name}")
+            logger.info(f"Setting up Host-Only routing: Host {host_ip} -> {tun_name}, Ports Open")
+            
+            mark_hex = "0x80"
+
+            # 1. Inbound Connection Marking (Ensure ports like 8089 accessible)
+            # -I to insert at top
+            await self._exec(f"iptables -t mangle -I PREROUTING -i {iface} -m conntrack --ctstate NEW -j CONNMARK --set-mark {mark_hex}")
+            await self._exec(f"iptables -t mangle -I OUTPUT -j CONNMARK --restore-mark")
+            
+            # 2. Routing Rules
+            # Rule A: Marked packets (inbound replies) -> Main Table
+            await self._exec(f"ip rule add fwmark {mark_hex} table main priority 90")
+            
+            # Rule B: Host Outgoing Traffic -> TUN Table
+            await self._exec(f"ip rule add from {host_ip} table {_POLICY_TABLE} priority 100")
+            
+            # 3. TUN Table Route
+            await self._exec(f"ip route add default dev {tun_name} table {_POLICY_TABLE}")
+            
+            logger.info("Host-Only routing applied successfully")
         except Exception as e:
-            logger.error(f"Error removing default interface: {e}")
+            logger.error(f"Error setting up host routing: {e}")
+
+    async def cleanup_host_tun_routing(self, iface: str, host_ip: str, tun_name: str) -> None:
+        """Clean up host routing rules."""
+        try:
+            mark_hex = "0x80"
+            
+            # Cleanup Rules
+            await self._exec(f"ip route flush table {_POLICY_TABLE}")
+            await self._exec(f"ip rule del from {host_ip} table {_POLICY_TABLE}")
+            await self._exec(f"ip rule del fwmark {mark_hex} table main")
+            
+            # Cleanup Iptables
+            if iface:
+                await self._exec(f"iptables -t mangle -D PREROUTING -i {iface} -m conntrack --ctstate NEW -j CONNMARK --set-mark {mark_hex}")
+                await self._exec(f"iptables -t mangle -D OUTPUT -j CONNMARK --restore-mark")
+            
+            logger.info("Host-Only routing cleaned up")
+        except Exception as e:
+             logger.error(f"Error cleaning up host routing: {e}")
 
     # ------------------------------------------------------------------
     # Docker Compatibility (Port Mapping Fixes)
     # ------------------------------------------------------------------
 
-    async def setup_docker_bypass(self) -> None:
-        """Configure policy routing so Docker containers bypass the TUN interface.
 
-        Routes private subnets (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) to the
-        'main' table, ensuring they use the physical gateway instead of the TUN default route.
-        """
-        try:
-            logger.info("Setting up Docker/Private bypass rules (Host-Only Mode)...")
-            
-            # Subnets to exclude from TUN
-            subnets = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
-            
-            for subnet in subnets:
-                # Priority 50: Process before default route
-                cmd = f"ip rule add from {subnet} table main priority 50"
-                rc, _, stderr = await self._exec(cmd)
-                if rc != 0 and "File exists" not in stderr:
-                    logger.error(f"Failed to add bypass rule for {subnet}: {stderr}")
-
-            logger.info("Docker bypass rules applied")
-        except Exception as e:
-            logger.error(f"Error setting up Docker bypass: {e}")
-
-    async def cleanup_docker_bypass(self) -> None:
-        """Remove policy routing rules for Docker bypass."""
-        try:
-            subnets = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
-            
-            for subnet in subnets:
-                # Clean up rules (loop to handle potential duplicates)
-                for _ in range(3):
-                    cmd = f"ip rule del from {subnet} table main priority 50"
-                    rc, _, _ = await self._exec(cmd)
-                    if rc != 0:
-                        break # No more rules
-            
-            logger.info("Docker bypass rules removed")
-        except Exception as e:
-            logger.error(f"Error cleaning up Docker bypass: {e}")
 
     # ------------------------------------------------------------------
     # Split Tunneling via warp-cli  (OfficialController)
