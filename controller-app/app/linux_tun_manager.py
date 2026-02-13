@@ -1,6 +1,12 @@
 """
-Linux TUN interface and routing manager for WarpPool.
-Handles policy routing, nftables firewall rules, and TUN interface management.
+Linux TUN interface, routing, and Split Tunneling manager for WarpPool.
+
+Provides two sets of functionality:
+- **Policy routing & static routes** — used by UsqueController (usque third-party
+  client) which requires manual bypass routing through table 100.
+- **Split Tunneling via warp-cli** — used by OfficialController (warp-cli official
+  client) to manage the ``warp-cli tunnel ip`` exclude list so that certain CIDRs
+  bypass the WARP tunnel without manual iptables / nftables rules.
 """
 import asyncio
 import logging
@@ -14,12 +20,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _POLICY_TABLE = 100
 _POLICY_PRIORITY = 100
-_NFTABLES_TABLE_NAME = "warppool"
-_NFTABLES_CHAIN_NAME = "input"
 
 
 class LinuxTunManager:
-    """Manage Linux TUN interface routing, policy rules, and nftables firewall."""
+    """Manage Linux TUN interface routing, policy rules, and warp-cli Split Tunneling."""
 
     # ------------------------------------------------------------------
     # Internal helper
@@ -256,116 +260,183 @@ class LinuxTunManager:
             logger.error(f"Error setting default interface: {e}")
 
     # ------------------------------------------------------------------
-    # nftables firewall management
+    # Split Tunneling via warp-cli  (OfficialController)
     # ------------------------------------------------------------------
 
-    async def capture_firewall_snapshot(self) -> dict:
-        """Capture the current nftables/iptables state *before* WARP modifies it.
+    async def split_tunnel_add(self, cidr: str) -> bool:
+        """Add a CIDR to the Split Tunneling exclude list (traffic will bypass WARP).
 
-        Returns a dict with keys ``nftables`` and ``iptables`` holding the raw
-        rule-set text, which :meth:`apply_nftables_allow_rules` can reference
-        when constructing allow rules.
+        Uses ``warp-cli tunnel ip add <cidr>``.
+        Returns *True* on success or if the entry already exists.
         """
-        snapshot: dict = {"nftables": "", "iptables": ""}
-
         try:
-            rc, stdout, _ = await self._exec("nft list ruleset")
+            rc, stdout, stderr = await self._exec(f"warp-cli tunnel ip add {cidr}")
             if rc == 0:
-                snapshot["nftables"] = stdout
+                logger.info(f"Split tunnel add: {cidr}")
+                return True
+            # "Error: IP address already exists" — treat as success
+            if "already exists" in stderr or "already exists" in stdout:
+                logger.debug(f"Split tunnel add: {cidr} already exists, skipping")
+                return True
+            logger.error(f"Split tunnel add failed for {cidr}: {stderr}")
+            return False
         except Exception as e:
-            logger.warning(f"Failed to capture nftables snapshot: {e}")
+            logger.error(f"Error in split_tunnel_add({cidr}): {e}")
+            return False
 
-        try:
-            rc, stdout, _ = await self._exec("iptables-save")
-            if rc == 0:
-                snapshot["iptables"] = stdout
-        except Exception as e:
-            logger.warning(f"Failed to capture iptables snapshot: {e}")
+    async def split_tunnel_remove(self, cidr: str) -> bool:
+        """Remove a CIDR from the Split Tunneling exclude list.
 
-        logger.info("Firewall snapshot captured")
-        return snapshot
-
-    async def apply_nftables_allow_rules(
-        self, iface: str, ports: list, snapshot: dict = None
-    ) -> None:
-        """Create an nftables table (``inet warppool``) with rules that allow
-        inbound TCP traffic on the given *ports* through *iface*, as well as
-        established/related traffic.
-
-        Parameters
-        ----------
-        iface : str
-            Physical network interface (e.g. ``eth0``).
-        ports : list
-            List of TCP port numbers to allow (panel, SOCKS5, …).
-        snapshot : dict, optional
-            Firewall snapshot from :meth:`capture_firewall_snapshot` (currently
-            used only for logging / future reference).
+        Uses ``warp-cli tunnel ip remove <cidr>``.
+        Returns *True* on success or if the entry does not exist.
         """
-        if not ports:
-            logger.warning("apply_nftables_allow_rules: empty port list, skipping")
-            return
-
         try:
-            # Clean up any previous warppool table first
-            await self._exec(f"nft delete table inet {_NFTABLES_TABLE_NAME}")
-
-            # Create the warppool table
-            rc, _, stderr = await self._exec(f"nft add table inet {_NFTABLES_TABLE_NAME}")
-            if rc != 0:
-                logger.error(f"Failed to create nftables table: {stderr}")
-                return
-
-            # Create an input chain with type filter, hook input, priority 0, policy accept
-            rc, _, stderr = await self._exec(
-                f"nft add chain inet {_NFTABLES_TABLE_NAME} {_NFTABLES_CHAIN_NAME} "
-                f"'{{ type filter hook input priority 0 ; policy accept ; }}'"
-            )
-            if rc != 0:
-                logger.error(f"Failed to create nftables chain: {stderr}")
-                return
-
-            # Allow established/related connections
-            rc, _, stderr = await self._exec(
-                f"nft add rule inet {_NFTABLES_TABLE_NAME} {_NFTABLES_CHAIN_NAME} "
-                f"ct state established,related accept"
-            )
-            if rc != 0:
-                logger.error(f"Failed to add established/related rule: {stderr}")
-
-            # Allow loopback
-            rc, _, stderr = await self._exec(
-                f"nft add rule inet {_NFTABLES_TABLE_NAME} {_NFTABLES_CHAIN_NAME} "
-                f"iifname lo accept"
-            )
-            if rc != 0:
-                logger.error(f"Failed to add loopback rule: {stderr}")
-
-            # Allow specified TCP ports on the physical interface
-            for port in ports:
-                rc, _, stderr = await self._exec(
-                    f"nft add rule inet {_NFTABLES_TABLE_NAME} {_NFTABLES_CHAIN_NAME} "
-                    f"iifname {iface} tcp dport {port} accept"
-                )
-                if rc != 0:
-                    logger.error(f"Failed to add allow rule for port {port}: {stderr}")
-
-            logger.info(
-                f"nftables allow rules applied: table={_NFTABLES_TABLE_NAME}, "
-                f"iface={iface}, ports={ports}"
-            )
+            rc, stdout, stderr = await self._exec(f"warp-cli tunnel ip remove {cidr}")
+            if rc == 0:
+                logger.info(f"Split tunnel remove: {cidr}")
+                return True
+            # Entry not found — treat as success
+            if "not found" in stderr or "not found" in stdout or "does not exist" in stderr:
+                logger.debug(f"Split tunnel remove: {cidr} not found, skipping")
+                return True
+            logger.error(f"Split tunnel remove failed for {cidr}: {stderr}")
+            return False
         except Exception as e:
-            logger.error(f"Error applying nftables rules: {e}")
+            logger.error(f"Error in split_tunnel_remove({cidr}): {e}")
+            return False
 
-    async def cleanup_nftables_rules(self) -> None:
-        """Delete the ``inet warppool`` nftables table (all rules inside it)."""
+    async def split_tunnel_list(self) -> list[str]:
+        """Return the current Split Tunneling exclude list as a list of CIDR strings.
+
+        Uses ``warp-cli tunnel ip list`` and parses each non-empty line as a CIDR.
+        """
         try:
-            rc, _, stderr = await self._exec(f"nft delete table inet {_NFTABLES_TABLE_NAME}")
+            rc, stdout, stderr = await self._exec("warp-cli tunnel ip list")
             if rc != 0:
-                # Table may not exist — that's fine
-                if "No such file or directory" not in stderr and "does not exist" not in stderr:
-                    logger.warning(f"nftables cleanup notice: {stderr}")
-            else:
-                logger.info(f"nftables table '{_NFTABLES_TABLE_NAME}' deleted")
+                logger.error(f"Split tunnel list failed: {stderr}")
+                return []
+            cidrs: list[str] = []
+            for line in stdout.splitlines():
+                line = line.strip()
+                if line and ("/" in line or "." in line or ":" in line):
+                    cidrs.append(line)
+            return cidrs
         except Exception as e:
-            logger.error(f"Error cleaning up nftables rules: {e}")
+            logger.error(f"Error in split_tunnel_list: {e}")
+            return []
+
+    async def split_tunnel_reset(self) -> bool:
+        """Reset the Split Tunneling exclude list to its default values.
+
+        Uses ``warp-cli tunnel ip reset``.
+        """
+        try:
+            rc, _, stderr = await self._exec("warp-cli tunnel ip reset")
+            if rc != 0:
+                logger.error(f"Split tunnel reset failed: {stderr}")
+                return False
+            logger.info("Split tunnel list reset to defaults")
+            return True
+        except Exception as e:
+            logger.error(f"Error in split_tunnel_reset: {e}")
+            return False
+
+    async def setup_split_tunnel_bypass(self, cidrs: list[str]) -> bool:
+        """Batch-add CIDRs to the Split Tunneling exclude list.
+
+        Used to exclude multiple network ranges at once (e.g. panel IP, management
+        subnet, SSH client IP).  Duplicate entries are silently ignored.
+
+        Returns *True* if **all** additions succeeded.
+        """
+        if not cidrs:
+            logger.debug("setup_split_tunnel_bypass: empty CIDR list, skipping")
+            return True
+
+        all_ok = True
+        for cidr in cidrs:
+            if not await self.split_tunnel_add(cidr):
+                all_ok = False
+
+        if all_ok:
+            logger.info(f"Split tunnel bypass set up for {len(cidrs)} CIDRs")
+        else:
+            logger.warning("Split tunnel bypass: some CIDRs failed to add")
+        return all_ok
+
+    async def cleanup_split_tunnel_bypass(self, cidrs: list[str]) -> bool:
+        """Batch-remove CIDRs from the Split Tunneling exclude list.
+
+        Used during disconnect to clean up previously added exclude rules.
+        Non-existent entries are silently ignored.
+
+        Returns *True* if **all** removals succeeded.
+        """
+        if not cidrs:
+            logger.debug("cleanup_split_tunnel_bypass: empty CIDR list, skipping")
+            return True
+
+        all_ok = True
+        for cidr in cidrs:
+            if not await self.split_tunnel_remove(cidr):
+                all_ok = False
+
+        if all_ok:
+            logger.info(f"Split tunnel bypass cleaned up for {len(cidrs)} CIDRs")
+        else:
+            logger.warning("Split tunnel bypass: some CIDRs failed to remove")
+        return all_ok
+
+    # ------------------------------------------------------------------
+    # Server / SSH client IP helpers
+    # ------------------------------------------------------------------
+
+    async def get_server_ip(self) -> Optional[str]:
+        """Return the server's primary IP address.
+
+        Prefers the *source_ip* from :meth:`get_default_route`.  Falls back to
+        ``hostname -I`` if the default route does not include a source address.
+        """
+        try:
+            _, _, source_ip = await self.get_default_route()
+            if source_ip:
+                return source_ip
+
+            # Fallback: hostname -I returns space-separated IPs
+            rc, stdout, _ = await self._exec("hostname -I")
+            if rc == 0 and stdout:
+                first_ip = stdout.split()[0].strip()
+                if first_ip:
+                    return first_ip
+        except Exception as e:
+            logger.error(f"Error getting server IP: {e}")
+
+        return None
+
+    async def get_ssh_client_ip(self) -> Optional[str]:
+        """Return the IP address of the current SSH client, or *None*.
+
+        Reads the ``SSH_CLIENT`` or ``SSH_CONNECTION`` environment variable to
+        determine the remote peer.  This is useful for automatically excluding
+        the administrator's SSH IP from the WARP tunnel to prevent lockout.
+        """
+        try:
+            # SSH_CLIENT="<client_ip> <client_port> <server_port>"
+            ssh_client = os.environ.get("SSH_CLIENT", "")
+            if ssh_client:
+                client_ip = ssh_client.split()[0].strip()
+                if client_ip:
+                    logger.debug(f"SSH client IP from SSH_CLIENT: {client_ip}")
+                    return client_ip
+
+            # SSH_CONNECTION="<client_ip> <client_port> <server_ip> <server_port>"
+            ssh_conn = os.environ.get("SSH_CONNECTION", "")
+            if ssh_conn:
+                client_ip = ssh_conn.split()[0].strip()
+                if client_ip:
+                    logger.debug(f"SSH client IP from SSH_CONNECTION: {client_ip}")
+                    return client_ip
+        except Exception as e:
+            logger.error(f"Error getting SSH client IP: {e}")
+
+        return None

@@ -34,10 +34,7 @@ class OfficialController:
         
         # TUN routing state
         self._tun_manager = LinuxTunManager()
-        self._saved_gateway = None
-        self._saved_interface = None
-        self._saved_ip = None
-        self._firewall_snapshot = None  # 连接 TUN 前采集的防火墙快照
+        self._split_tunnel_cidrs: list[str] = []
 
     async def _run_command(self, command: str, timeout=None):
         try:
@@ -208,12 +205,6 @@ class OfficialController:
                 logger.error("Failed to start official WARP services (TUN)")
                 return False
 
-        # 在 WARP 修改路由/防火墙之前，先采集现有防火墙快照
-        self._firewall_snapshot = await self._tun_manager.capture_firewall_snapshot()
-
-        # Save original route BEFORE warp-cli connect modifies routing
-        self._saved_gateway, self._saved_interface, self._saved_ip = await self._tun_manager.get_default_route()
-
         logger.info("Connecting WARP (official, TUN mode)...")
         await self.execute_command("warp-cli --accept-tos mode warp")
 
@@ -230,10 +221,7 @@ class OfficialController:
             self._invalidate_status_cache()
             logger.info("Official WARP TUN connection successful")
             
-            # Give WARP a moment to fully initialize nftables rules
-            await asyncio.sleep(2)
-            
-            # Apply policy routing so panel/proxy response traffic bypasses WARP TUN
+            # Apply Split Tunneling so panel/management traffic bypasses WARP TUN
             await self._apply_tun_routing()
             return True
 
@@ -436,40 +424,42 @@ class OfficialController:
     # ------------------------------------------------------------------
 
     async def _apply_tun_routing(self):
-        """Apply policy-based routing so panel/proxy response traffic bypasses WARP TUN."""
-        gw = self._saved_gateway
-        iface = self._saved_interface
-        ip = self._saved_ip
-
-        if not gw or not iface or not ip:
-            logger.warning("Missing original route info, skipping TUN routing fix (panel may be inaccessible)")
-            return
-
+        """Use warp-cli Split Tunneling to exclude panel/management traffic from WARP tunnel."""
         try:
-            # 1. Setup policy routing (bypass)
-            await self._tun_manager.setup_bypass_routing(gw, iface, ip)
+            cidrs_to_exclude = []
 
-            # 2. Add nftables rules: panel port + 快照中原有的放行规则
-            panel_port = int(os.getenv("PANEL_PORT", 8000))
-            await self._tun_manager.apply_nftables_allow_rules(
-                iface, [panel_port], snapshot=self._firewall_snapshot
-            )
+            # 1. 获取服务器自身 IP，排除出隧道（确保面板可访问）
+            server_ip = await self._tun_manager.get_server_ip()
+            if server_ip:
+                cidrs_to_exclude.append(f"{server_ip}/32")
 
-            logger.info(f"TUN policy route applied: from {ip} via {gw} dev {iface}")
+            # 2. 获取 SSH 客户端 IP，排除出隧道（防止 SSH 断连）
+            ssh_ip = await self._tun_manager.get_ssh_client_ip()
+            if ssh_ip:
+                cidrs_to_exclude.append(f"{ssh_ip}/32")
+
+            # 3. 排除常见局域网网段
+            lan_cidrs = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+            for cidr in lan_cidrs:
+                cidrs_to_exclude.append(cidr)
+
+            # 4. 去重
+            cidrs_to_exclude = list(dict.fromkeys(cidrs_to_exclude))
+
+            # 5. 批量添加到 Split Tunneling
+            await self._tun_manager.setup_split_tunnel_bypass(cidrs_to_exclude)
+            self._split_tunnel_cidrs = cidrs_to_exclude
+
+            logger.info(f"Split Tunneling configured: excluded {len(cidrs_to_exclude)} CIDRs")
         except Exception as e:
-            logger.error(f"Failed to apply TUN routing: {e}")
+            logger.error(f"Failed to configure Split Tunneling: {e}")
 
     async def _cleanup_tun_routing(self):
-        """Remove policy routing rules, table 100, and nftables rules."""
-        # Clean up all warppool nftables rules (by prefix)
-        await self._tun_manager.cleanup_nftables_rules()
-        
-        # Clean up bypass routing
-        await self._tun_manager.cleanup_bypass_routing(self._saved_ip)
-        
-        # Reset snapshot
-        self._firewall_snapshot = None
-        logger.info("TUN routing cleanup complete")
+        """Remove Split Tunneling exclusion rules added by _apply_tun_routing."""
+        if self._split_tunnel_cidrs:
+            await self._tun_manager.cleanup_split_tunnel_bypass(self._split_tunnel_cidrs)
+            self._split_tunnel_cidrs = []
+        logger.info("Split Tunneling cleanup complete")
 
     # ------------------------------------------------------------------
     # Connectivity checks
