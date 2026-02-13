@@ -299,14 +299,28 @@ class UsqueController:
         if self._saved_gw and self._saved_iface and endpoint:
             await self._tun_manager.add_static_route(f"{endpoint}/32", self._saved_gw, self._saved_iface)
 
-        # 3. Set default route through TUN
+        # 3. Set default route through TUN (Safe metric-based)
         await self._tun_manager.set_default_interface(tun_name)
-        logger.info(f"TUN routing configured: default via {tun_name}")
+        
+        # 4. Docker Compatibility (Fix port mappings)
+        if self._saved_iface:
+            await self._tun_manager.setup_docker_compatibility(self._saved_iface)
+
+        logger.info(f"TUN routing configured: default via {tun_name} (metric 1)")
 
     async def _cleanup_tun_routing(self):
         """Remove TUN routing: policy rule, table 100, endpoint route."""
         # Cleanup bypass routing
         await self._tun_manager.cleanup_bypass_routing(self._saved_ip)
+        
+        # Cleanup Docker compatibility
+        if self._saved_iface:
+            await self._tun_manager.cleanup_docker_compatibility(self._saved_iface)
+            
+        # Remove default route (if interface still exists, though stopping tun usually removes it)
+        # We try to remove it explicitly to be safe
+        tun_name = await self._tun_manager.get_tun_interface_name() or "tun0"
+        await self._tun_manager.remove_default_interface(tun_name)
 
         # Remove endpoint route
         endpoint = self._get_warp_endpoint()

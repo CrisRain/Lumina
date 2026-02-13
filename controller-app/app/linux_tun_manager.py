@@ -249,15 +249,92 @@ class LinuxTunManager:
     # ------------------------------------------------------------------
 
     async def set_default_interface(self, tun_name: str) -> None:
-        """Replace the default route to go through the TUN interface."""
+        """Add a default route with lower metric (higher priority) via TUN.
+
+        Avoids replacing the existing default route to prevent network loss on crash.
+        """
         try:
-            rc, _, stderr = await self._exec(f"ip route replace default dev {tun_name}")
+            # Metric 1 is higher priority than typical default routes (usually 100+)
+            cmd = f"ip route add default dev {tun_name} metric 1"
+            rc, _, stderr = await self._exec(cmd)
             if rc != 0:
-                logger.error(f"Failed to set default interface to {tun_name}: {stderr}")
+                if "File exists" in stderr:
+                    logger.warning(f"Default route via {tun_name} metric 1 already exists.")
+                else:
+                    logger.error(f"Failed to set default interface to {tun_name}: {stderr}")
             else:
-                logger.info(f"Default route set to dev {tun_name}")
+                logger.info(f"Default route set to dev {tun_name} metric 1")
         except Exception as e:
             logger.error(f"Error setting default interface: {e}")
+
+    async def remove_default_interface(self, tun_name: str) -> None:
+        """Remove the high-priority default route via TUN."""
+        try:
+            cmd = f"ip route del default dev {tun_name} metric 1"
+            rc, _, stderr = await self._exec(cmd)
+            if rc != 0 and "No such process" not in stderr:
+                 logger.error(f"Failed to remove default route via {tun_name}: {stderr}")
+            else:
+                 logger.info(f"Default route removed from dev {tun_name}")
+        except Exception as e:
+            logger.error(f"Error removing default interface: {e}")
+
+    # ------------------------------------------------------------------
+    # Docker Compatibility (Port Mapping Fixes)
+    # ------------------------------------------------------------------
+
+    async def setup_docker_compatibility(self, iface: str) -> None:
+        """Set up iptables marking to ensure Docker port mappings work correctly.
+
+        Marks incoming connections on the physical interface so their replies
+        are routed back through the same interface (bypassing TUN).
+        """
+        if not iface:
+            return
+
+        try:
+            logger.info(f"Setting up Docker compatibility rules for {iface}...")
+            
+            # fwmark 0x64 (100) to match table 100
+            mark = "0x64" 
+            
+            # 1. Add fwmark rule
+            await self._exec(f"ip rule add fwmark {mark} table {_POLICY_TABLE} priority {_POLICY_PRIORITY - 1}")
+
+            # 2. Add iptables mangle rules
+            # Restore mark on PREROUTING (for established connections)
+            await self._exec(f"iptables -t mangle -A PREROUTING -j CONNMARK --restore-mark")
+            
+            # Mark NEW connections coming from physical interface
+            await self._exec(f"iptables -t mangle -A PREROUTING -i {iface} -m conntrack --ctstate NEW -j CONNMARK --set-mark {mark}")
+            
+            # Restore mark on OUTPUT (for local replies)
+            await self._exec(f"iptables -t mangle -A OUTPUT -j CONNMARK --restore-mark")
+            
+            logger.info("Docker compatibility rules applied")
+        except Exception as e:
+            logger.error(f"Error setting up Docker compatibility: {e}")
+
+    async def cleanup_docker_compatibility(self, iface: str) -> None:
+        """Remove iptables marking rules for Docker compatibility."""
+        if not iface:
+            return
+
+        try:
+            mark = "0x64"
+            
+            # 1. Remove fwmark rule
+            await self._exec(f"ip rule del fwmark {mark} table {_POLICY_TABLE}")
+
+            # 2. Remove iptables mangle rules (using -D)
+            # Order matters less for deletion, but let's be thorough
+            await self._exec(f"iptables -t mangle -D PREROUTING -j CONNMARK --restore-mark")
+            await self._exec(f"iptables -t mangle -D PREROUTING -i {iface} -m conntrack --ctstate NEW -j CONNMARK --set-mark {mark}")
+            await self._exec(f"iptables -t mangle -D OUTPUT -j CONNMARK --restore-mark")
+            
+            logger.info("Docker compatibility rules removed")
+        except Exception as e:
+            logger.error(f"Error cleaning up Docker compatibility: {e}")
 
     # ------------------------------------------------------------------
     # Split Tunneling via warp-cli  (OfficialController)
