@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/bin/socat "TCP-LISTEN:${SOCKS5_PORT:-1080},reuseaddr,bind=0.0.0.0,fork" "TCP:127.0.0.1:40001"

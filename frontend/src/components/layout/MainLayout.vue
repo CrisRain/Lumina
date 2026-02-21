@@ -9,7 +9,7 @@
         >
           <Bars3Icon class="w-6 h-6" />
         </button>
-        <span class="font-bold text-gray-900 tracking-tight">Warp<span class="text-orange-600">Pool</span></span>
+        <span class="font-bold text-gray-900 tracking-tight">Lu<span class="text-orange-600">mina</span></span>
       </div>
     </div>
 

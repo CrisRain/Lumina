@@ -19,7 +19,7 @@
         </svg>
       </div>
       <div>
-        <h1 class="text-xl font-bold text-gray-900 tracking-tight">Warp<span class="text-orange-600">Pool</span></h1>
+        <h1 class="text-xl font-bold text-gray-900 tracking-tight">Lu<span class="text-orange-600">mina</span></h1>
         <p class="text-[10px] text-gray-500 font-medium tracking-wide uppercase">Manager</p>
       </div>
     </div>
@@ -66,6 +66,8 @@ import {
 } from '@heroicons/vue/24/outline';
 import { ref, onMounted } from 'vue';
 
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '/api';
+
 defineProps({
   isOpen: Boolean
 });
@@ -83,9 +85,7 @@ const version = ref('...');
 
 onMounted(async () => {
   try {
-    // Determine API base - if in dev mode (Vite typically proxies /api, but if not we might need full URL)
-    // Assuming Vite proxy is set up or relative path works (which it should if served by same backend or proxy)
-    const res = await fetch('/api/version');
+    const res = await fetch(`${apiBaseUrl}/version`);
     if (res.ok) {
         const data = await res.json();
         // Ensure v prefix

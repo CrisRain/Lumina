@@ -1,34 +1,28 @@
 version: '3.8'
 
 services:
-  warp:
+  lumina:
     # 使用 Docker Hub 上的预构建镜像
-    image: crisocean/warppanel:latest
-    container_name: warppanel-client
+    image: crisocean/lumina:latest
+    container_name: lumina-client
     restart: unless-stopped
-    # privileged: true  # No longer needed for supervisor
-    cap_add:
-      - NET_ADMIN # Required for TUN mode
     environment:
       - WARP_BACKEND=usque # Options: 'usque' (default), 'official'
-      - WARP_MODE=proxy # Options: 'proxy' (default), 'tun'
+      # - PANEL_PASSWORD=secret # Optional: Set a password for the panel
+    cap_add:
+      - NET_ADMIN
     devices:
-      - /dev/net/tun
-    sysctls:
-      - net.ipv4.conf.all.src_valid_mark=1
-      # Disable reverse path filtering for TUN mode (allows asymmetric routing)
-      - net.ipv4.conf.all.rp_filter=0
-      - net.ipv4.conf.default.rp_filter=0
+      - /dev/net/tun:/dev/net/tun
     ports:
-      - "5173:8000" # Web UI (served by FastAPI)
+      - "8000:8000" # Web UI (served by FastAPI)
       - "127.0.0.1:1080:1080" # SOCKS5 Proxy (localhost only)
     volumes:
-      - warp_data:/var/lib/cloudflare-warp
-      - warp_usque:/var/lib/warp
-      - warp_config:/app/data
+      - lumina_data:/var/lib/cloudflare-warp
+      - lumina_usque:/var/lib/warp
+      - lumina_config:/app/data
       # - /sys/fs/cgroup:/sys/fs/cgroup:rw  # Not needed for supervisor
 
 volumes:
-  warp_data:
-  warp_usque:
-  warp_config:
+  lumina_data:
+  lumina_usque:
+  lumina_config:

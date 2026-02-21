@@ -42,11 +42,9 @@ class OfficialController(WarpBackendController):
     async def _is_daemon_responsive(self) -> bool:
         """Check if warp-svc is running AND responsive"""
         try:
-            rc, stdout, _ = await self._run_command("supervisorctl status warp-svc")
-            if rc != 0 or "RUNNING" not in stdout:
+            rc, stdout, _ = await self._run_command("s6-svstat -o up /run/service/warp-svc")
+            if rc != 0 or stdout.strip() != "true":
                 return False
-            
-            # Use a short timeout for responsiveness check
             rc, _, _ = await self._run_command("warp-cli --accept-tos status", timeout=2)
             return rc == 0
         except Exception:
@@ -133,13 +131,9 @@ class OfficialController(WarpBackendController):
             logger.info("Starting background services (proxy mode)...")
             self.mute_backend_logs = False
 
-            try:
-                rc, _, _ = await self._run_command("supervisorctl start warp-svc")
-                if rc != 0:
-                     logger.error("Failed to start warp-svc")
-                     return False
-            except Exception:
-                logger.error("Failed to start warp-svc")
+            rc, _, stderr = await self._run_command("s6-rc -u change warp-svc")
+            if rc != 0:
+                logger.error(f"Failed to start warp-svc: {stderr}")
                 return False
 
             await asyncio.sleep(3)
@@ -178,8 +172,8 @@ class OfficialController(WarpBackendController):
         """Stop all possible services (safe for both modes)"""
         logger.info("Stopping official services...")
         try:
-            await self._run_command("supervisorctl stop socat")
-            await self._run_command("supervisorctl stop warp-svc")
+            await self._run_command("s6-rc -d change socat")
+            await self._run_command("s6-rc -d change warp-svc")
         except Exception as e:
             logger.error(f"Error stopping services: {e}")
 
@@ -188,31 +182,31 @@ class OfficialController(WarpBackendController):
     # ------------------------------------------------------------------
 
     async def _ensure_socat(self):
-        """Ensure socat service is running with the correct SOCKS5 port (proxy mode only)"""
+        """Ensure socat is running on the correct port; restart if port changed."""
         if self.mode != "proxy":
             return
 
-        # Update supervisor config if port differs from default
-        await self._update_supervisor_socat_port()
-
-        sys_active = False
+        s6_active = False
         try:
-            rc, stdout, _ = await self._run_command("supervisorctl status socat")
-            sys_active = rc == 0 and "RUNNING" in stdout
+            rc, stdout, _ = await self._run_command("s6-svstat -o up /run/service/socat")
+            s6_active = rc == 0 and stdout.strip() == "true"
         except Exception:
             pass
 
         port_open = await self._is_port_open(self.socks5_port)
 
-        if sys_active and port_open:
+        if s6_active and port_open:
             return
+
+        # Write updated port into the s6 container environment so the
+        # run script picks it up on next start.
+        self._write_s6_env("SOCKS5_PORT", str(self.socks5_port))
 
         logger.info(f"Starting socat service (port {self.socks5_port})...")
         try:
-            # Stop first to pick up config changes
-            await self._run_command("supervisorctl stop socat")
+            await self._run_command("s6-rc -d change socat")
             await asyncio.sleep(0.3)
-            await self._run_command("supervisorctl start socat")
+            await self._run_command("s6-rc -u change socat")
             await asyncio.sleep(1)
             if not await self._is_port_open(self.socks5_port):
                 logger.warning(f"Socat started but port {self.socks5_port} not listening yet")
@@ -220,34 +214,16 @@ class OfficialController(WarpBackendController):
         except Exception as e:
             logger.error(f"Error starting socat: {e}")
 
-    async def _update_supervisor_socat_port(self):
-        """Update the socat supervisor config to use the current socks5_port."""
-        import re as _re
-        conf_paths = [
-            "/etc/supervisor/conf.d/supervisord.conf",
-            "/etc/supervisor/conf.d/warppool.conf",
-        ]
-        for conf_path in conf_paths:
-            if not os.path.isfile(conf_path):
-                continue
-            try:
-                with open(conf_path, "r") as f:
-                    content = f.read()
-
-                new_cmd = f"command=/usr/bin/socat TCP-LISTEN:{self.socks5_port},reuseaddr,bind=0.0.0.0,fork TCP:127.0.0.1:40001"
-                updated = _re.sub(
-                    r"command=/usr/bin/socat TCP-LISTEN:\d+,reuseaddr,bind=0\.0\.0\.0,fork TCP:127\.0\.0\.1:40001",
-                    new_cmd,
-                    content,
-                )
-                if updated != content:
-                    with open(conf_path, "w") as f:
-                        f.write(updated)
-                    await self._run_command("supervisorctl reread")
-                    await self._run_command("supervisorctl update")
-                    logger.info(f"Updated socat supervisor config to port {self.socks5_port}")
-            except Exception as e:
-                logger.warning(f"Failed to update socat config in {conf_path}: {e}")
+    @staticmethod
+    def _write_s6_env(key: str, value: str) -> None:
+        """Persist an env var into the s6 container environment store."""
+        env_dir = "/var/run/s6/container_environment"
+        try:
+            os.makedirs(env_dir, exist_ok=True)
+            with open(os.path.join(env_dir, key), "w") as f:
+                f.write(value)
+        except OSError:
+            pass
 
 
     # ------------------------------------------------------------------

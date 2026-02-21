@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/local/bin/usque -c /var/lib/warp/config.json socks -b 0.0.0.0 -p "${SOCKS5_PORT:-1080}"

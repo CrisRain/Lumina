@@ -2,7 +2,7 @@
   <div class="space-y-6">
     <div>
       <h2 class="text-2xl font-bold text-gray-900">Kernel Management</h2>
-      <p class="text-sm text-gray-500">Manage kernel backend, operating mode, and transport protocols</p>
+      <p class="text-sm text-gray-500">Manage kernel backend and version</p>
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -62,24 +62,15 @@
           Transport Protocol
         </h3>
         
-        <div class="p-4 rounded-xl border mb-4" :class="canSwitchProtocol ? 'bg-blue-50 border-blue-100' : 'bg-gray-50 border-gray-100 opacity-75'">
+        <div class="p-4 rounded-xl border mb-4 bg-gray-50 border-gray-100">
           <div class="flex items-center justify-between mb-2">
             <span class="text-sm font-medium text-gray-900">Current Protocol</span>
-            <span class="text-xs font-mono px-2 py-0.5 rounded bg-white border border-gray-200 font-bold" :class="canSwitchProtocol ? 'text-blue-700' : 'text-gray-500'">{{ currentProtocol }}</span>
+            <span class="text-xs font-mono px-2 py-0.5 rounded bg-white border border-gray-200 font-bold text-gray-700">{{ currentProtocol }}</span>
           </div>
           
           <p class="text-xs text-gray-500 mb-4">
-            MASQUE is the modern standard. WireGuard is legacy but may be faster.
+            Protocol is reported by the running kernel.
           </p>
-
-          <button 
-            v-if="canSwitchProtocol"
-            @click="toggleProtocol"
-            :disabled="isLoading"
-            class="w-full py-2 px-4 rounded-lg bg-white border border-blue-200 text-blue-700 text-sm font-medium hover:bg-blue-50 transition-colors shadow-sm"
-          >
-            Switch to {{ currentProtocol === 'MASQUE' ? 'WireGuard' : 'MASQUE' }}
-          </button>
         </div>
       </div>
 
@@ -163,8 +154,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
-import axios from 'axios';
+import { ref, computed, watch, onMounted } from 'vue';
 import { 
   ServerStackIcon, 
   CpuChipIcon, 
@@ -172,38 +162,23 @@ import {
   CheckIcon,
   ArchiveBoxIcon
 } from '@heroicons/vue/24/outline';
+import { useStatus, useWarpActions } from '../composables/usePolling';
 
-const statusData = ref({});
+const { statusData, backend, protocol: currentProtocol, warpMode } = useStatus();
+const { apiCall, isLoading } = useWarpActions();
+
+const isDocker = computed(() => statusData.value?.is_docker || false);
+
 const versionData = ref({ versions: [], current: '', installed_version: '', latest_version: '', update_available: false });
-const isLoading = ref(false);
 const isCheckingUpdate = ref(false);
 const isUpdating = ref(false);
-let socket = null;
-
-const isDocker = computed(() => statusData.value.is_docker || false);
-const backend = computed(() => statusData.value.backend || 'usque');
-const warpMode = computed(() => statusData.value.warp_mode || 'proxy');
-const currentProtocol = computed(() => statusData.value.warp_protocol || statusData.value.protocol || 'MASQUE');
-const canSwitchProtocol = computed(() => backend.value === 'official' && warpMode.value === 'tun');
-
-const apiCall = async (method, url, data = null) => {
-  try {
-    const response = await axios[method](url, data);
-    return response.data;
-  } catch (err) {
-    console.error(`API Error (${method} ${url}):`, err);
-    alert(err.response?.data?.detail || 'Operation failed');
-    return null;
-  }
-};
 
 const versionMap = ref({});
 
 const fetchAllVersions = async () => {
-  const data = await apiCall('get', '/api/kernel/all-versions');
+  const data = await apiCall('get', '/kernel/all-versions');
   if (data) {
     versionMap.value = data;
-    // Also update current selected version data if needed
     if (data[backend.value]) {
        const b = data[backend.value];
        versionData.value = {
@@ -218,19 +193,17 @@ const fetchAllVersions = async () => {
 };
 
 const fetchVersions = async () => {
-    // Legacy method, kept for compatibility if needed, but fetchAllVersions covers it mostly.
-    // Actually we can just call fetchAllVersions
     await fetchAllVersions();
 };
 
 const checkForUpdates = async () => {
   isCheckingUpdate.value = true;
-  const res = await apiCall('post', '/api/kernel/check-update', { backend: backend.value });
+  const res = await apiCall('post', '/kernel/check-update', { backend: backend.value });
   await fetchVersions();
   isCheckingUpdate.value = false;
   
   if (res && res.success) {
-    // Optionally notify user via toast, but UI will update
+    // Optionally notify user via toast
   } else {
     alert(res?.message || 'No update found or check failed');
   }
@@ -240,7 +213,7 @@ const performUpdate = async () => {
   if (!confirm(`Download and install update ${versionData.value.latest_version}? The kernel will restart.`)) return;
   
   isUpdating.value = true;
-  const res = await apiCall('post', '/api/kernel/update', { backend: backend.value });
+  const res = await apiCall('post', '/kernel/update', { backend: backend.value });
   
   if (res && res.success) {
     await fetchVersions();
@@ -256,7 +229,7 @@ const switchVersion = async (newVersion) => {
   if (!confirm(`Switch kernel version to ${newVersion}? This will restart the kernel.`)) return;
   
   isLoading.value = true;
-  await apiCall('post', '/api/kernel/version', { backend: backend.value, version: newVersion });
+  await apiCall('post', '/kernel/version', { backend: backend.value, version: newVersion });
   await fetchVersions();
   setTimeout(() => isLoading.value = false, 1500);
 };
@@ -265,26 +238,7 @@ const switchBackend = async (newBackend) => {
   if (backend.value === newBackend) return;
   if (!confirm(`Switch backend to ${newBackend}? This will reconnect WARP.`)) return;
   isLoading.value = true;
-  await apiCall('post', '/api/backend/switch', { backend: newBackend });
-  // Version fetch will be triggered by watcher
-  setTimeout(() => isLoading.value = false, 1500);
-};
-
-const switchMode = async (newMode) => {
-  if (warpMode.value === newMode) return;
-  if (!confirm(`Switch to ${newMode.toUpperCase()} mode? This will reconnect WARP.`)) return;
-  isLoading.value = true;
-  await apiCall('post', '/api/config/mode', { mode: newMode });
-  setTimeout(() => isLoading.value = false, 1500);
-};
-
-const toggleProtocol = async () => {
-  if (!canSwitchProtocol.value) return;
-  const newProtocol = currentProtocol.value === 'MASQUE' ? 'wireguard' : 'masque';
-  if (!confirm(`Switch protocol to ${newProtocol}?`)) return;
-  
-  isLoading.value = true;
-  await apiCall('post', '/api/config/protocol', { protocol: newProtocol });
+  await apiCall('post', '/backend/switch', { backend: newBackend });
   setTimeout(() => isLoading.value = false, 1500);
 };
 
@@ -293,28 +247,7 @@ watch(backend, () => {
   fetchVersions();
 });
 
-// WebSocket for status sync
-const connectWebSocket = () => {
-  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${wsProtocol}//${window.location.host}/ws/status`;
-  socket = new WebSocket(wsUrl);
-  socket.onmessage = (event) => {
-    const message = JSON.parse(event.data);
-    if (message.type === 'status') {
-      statusData.value = message.data;
-    }
-  };
-  socket.onclose = () => {
-    setTimeout(connectWebSocket, 3000);
-  };
-};
-
 onMounted(() => {
-  connectWebSocket();
   fetchVersions();
-});
-
-onUnmounted(() => {
-  if (socket) socket.close();
 });
 </script>

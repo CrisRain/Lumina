@@ -3,8 +3,8 @@ import os
 def get_app_version():
     """Reads the application version from the VERSION file in the project root."""
     try:
-        # Assuming VERSION file is in the project root (d:\Projects\warp-panel\VERSION)
-        # and this file is in d:\Projects\warp-panel\backend\app\utils
+        # Assuming VERSION file is in the project root (d:\Projects\lumina\VERSION)
+        # and this file is in d:\Projects\lumina\backend\app\utils
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         version_file = os.path.join(base_dir, 'VERSION')
         

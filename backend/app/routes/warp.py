@@ -54,9 +54,12 @@ async def switch_backend(request: dict, user: str = Depends(auth_handler.get_cur
             "status": status,
         }
             
+    except ValueError as e:
+        logger.error(f"Switch backend failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Switch backend failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Switch backend failed")
 
 @router.post("/connect")
 async def connect(user: str = Depends(auth_handler.get_current_user)):

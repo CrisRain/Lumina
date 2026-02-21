@@ -76,18 +76,17 @@ class UsqueController(WarpBackendController):
         return await self._connect_proxy()
 
     async def _connect_proxy(self) -> bool:
-        """Start usque SOCKS5 proxy via supervisor"""
+        """Start usque SOCKS5 proxy via s6"""
         try:
             logger.info(f"Starting usque service (proxy mode, port {self.socks5_port})...")
-            # Update supervisor config if port changed
-            await self._update_supervisor_usque_port()
+            self._write_s6_env("SOCKS5_PORT", str(self.socks5_port))
 
-            # Ensure clean state (clear FATAL/BACKOFF from previous runs)
-            await self._run_command("supervisorctl stop usque")
+            # Stop first (idempotent — ok if it wasn't running)
+            await self._run_command("s6-rc -d change usque")
             await asyncio.sleep(0.5)
-            rc, _, _ = await self._run_command("supervisorctl start usque")
+            rc, _, stderr = await self._run_command("s6-rc -u change usque")
             if rc != 0:
-                logger.error("Failed to start usque via supervisor")
+                logger.error(f"Failed to start usque via s6-rc: {stderr}")
                 return False
 
             logger.info("Waiting for usque proxy to become ready...")
@@ -103,45 +102,35 @@ class UsqueController(WarpBackendController):
             logger.error(f"Failed to start usque proxy: {e}")
             return False
 
-    async def _update_supervisor_usque_port(self):
-        """Update the usque supervisor config to use the current socks5_port."""
-        import re as _re
-        conf_paths = [
-            "/etc/supervisor/conf.d/supervisord.conf",
-            "/etc/supervisor/conf.d/warppool.conf",
-        ]
-        for conf_path in conf_paths:
-            if not os.path.isfile(conf_path):
-                continue
-            try:
-                with open(conf_path, "r") as f:
-                    content = f.read()
+            logger.info("Waiting for usque proxy to become ready...")
+            for _ in range(15):
+                if await self._is_proxy_connected():
+                    logger.info("usque proxy started successfully")
+                    return True
+                await asyncio.sleep(1)
 
-                # Match: command=.../usque -c ... socks -b 0.0.0.0 -p <PORT>
-                # Using regex to find existing port and replace
-                # Assuming command structure
-                new_cmd = f"command=/usr/local/bin/usque -c /var/lib/warp/config.json socks -b 0.0.0.0 -p {self.socks5_port}"
-                updated = _re.sub(
-                    r"command=/usr/local/bin/usque -c /var/lib/warp/config\.json socks -b 0\.0\.0\.0 -p \d+",
-                    new_cmd,
-                    content,
-                )
-                if updated != content:
-                    with open(conf_path, "w") as f:
-                        f.write(updated)
-                    await self._run_command("supervisorctl reread")
-                    await self._run_command("supervisorctl update")
-                    logger.info(f"Updated usque supervisor config to port {self.socks5_port}")
-            except Exception as e:
-                logger.warning(f"Failed to update usque config in {conf_path}: {e}")
+            logger.error("usque proxy failed to start (timeout)")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to start usque proxy: {e}")
+            return False
+
+    @staticmethod
+    def _write_s6_env(key: str, value: str) -> None:
+        """Persist an env var into the s6 container environment store."""
+        env_dir = "/var/run/s6/container_environment"
+        try:
+            os.makedirs(env_dir, exist_ok=True)
+            with open(os.path.join(env_dir, key), "w") as f:
+                f.write(value)
+        except OSError:
+            pass
 
     async def disconnect(self) -> bool:
         """Stop usque service"""
         try:
             logger.info("Stopping usque services...")
-            
-            await self._run_command("supervisorctl stop usque")
-            
+            await self._run_command("s6-rc -d change usque")
             self.process = None
             self._invalidate_status_cache()
             return True
@@ -156,8 +145,8 @@ class UsqueController(WarpBackendController):
     async def _is_proxy_connected(self) -> bool:
         """Check if usque SOCKS5 proxy is running"""
         try:
-            rc, stdout, _ = await self._run_command("supervisorctl status usque")
-            if rc != 0 or "RUNNING" not in stdout:
+            rc, stdout, _ = await self._run_command("s6-svstat -o up /run/service/usque")
+            if rc != 0 or stdout.strip() != "true":
                 return False
         except Exception:
             return False

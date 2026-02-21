@@ -1,23 +1,23 @@
 <div align="center">
 
-# WarpPanel
+# Lumina
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Docker Pulls](https://img.shields.io/docker/pulls/crisocean/warppanel?style=flat-square&logo=docker)](https://hub.docker.com/r/crisocean/warppanel)
+[![Docker Pulls](https://img.shields.io/docker/pulls/crisocean/lumina?style=flat-square&logo=docker)](https://hub.docker.com/r/crisocean/lumina)
 [![Vue 3](https://img.shields.io/badge/Frontend-Vue_3-4FC08D?style=flat-square&logo=vue.js)](https://vuejs.org/)
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?style=flat-square&logo=fastapi)](https://fastapi.tiangolo.com/)
 
-**Modern Cloudflare WARP Management Panel**
+**Modern Cloudflare WARP Management Dashboard**
 
 [Features](#-features) • [Tech Stack](#-tech-stack) • [Quick Start](#-quick-start) • [Usage](#-usage) • [Linux Native](#-linux-native-deployment)
 
 ---
 
-![WarpPanel UI](resources/WarpPanel-02-02-2026_09_48_PM.png)
+![Lumina UI](resources/Lumina-02-02-2026_09_48_PM.png)
 
 </div>
 
-**WarpPanel** is a modern Web control panel designed for managing Cloudflare WARP clients. With a stunning **Glassmorphism** interface, it offers seamless switching between **Official** and **usque** engines, helping you easily control your network connection.
+**Lumina** is a modern Web dashboard designed for managing Cloudflare WARP clients. With a stunning **Glassmorphism** interface, it offers seamless switching between **Official** and **usque** engines, helping you easily control your network connection.
 
 ## ✨ Features
 
@@ -46,7 +46,6 @@
 - **🛡️ Security & Intelligence**
   - **Secure Proxy**: SOCKS5 port binds to `127.0.0.1` by default to prevent unauthorized external access.
   - **Clean Logs**: Intelligent filtering of verbose connection logs.
-  - **Custom Endpoints**: Support for specifying custom IP:PORT endpoints.
   - **Kernel Management**: Auto-update and version management for the `usque` kernel.
   - **Password Protection**: Optional web panel authentication.
 
@@ -74,14 +73,14 @@ No build required. Run directly with the pre-built image.
 ```yaml
 services:
   warp:
-    image: crisocean/warppanel:latest
-    container_name: warppanel-client
+    image: crisocean/lumina:latest
+    container_name: lumina-client
     restart: unless-stopped
     environment:
       - WARP_BACKEND=usque # 'usque' (default) or 'official'
       # - PANEL_PASSWORD=secret # Optional: Protect the UI
     ports:
-      - "5173:8000"            # Web UI
+      - "8000:8000"            # Web UI
       - "127.0.0.1:1080:1080"  # SOCKS5 Proxy (Local access only)
     volumes:
       - warp_data:/var/lib/cloudflare-warp
@@ -104,14 +103,14 @@ docker-compose up -d
 
 ```bash
 # 1. Clone
-git clone https://github.com/CrisRain/warppanel.git
-cd warppanel
+git clone https://github.com/CrisRain/lumina.git
+cd lumina
 
 # 2. Build & Run
 docker-compose up --build -d
 ```
 
-Access the panel at: **[http://localhost:5173](http://localhost:5173)**
+Access the panel at: **[http://localhost:8000](http://localhost:8000)**
 
 ---
 
@@ -127,7 +126,9 @@ Access the panel at: **[http://localhost:5173](http://localhost:5173)**
     Navigate to the **Kernel** page to manage `usque` versions, check for updates, or switch active versions.
 
 4.  **Settings**
-    Configure Panel Password, Ports, and Custom Endpoints in the **Settings** page.
+    Configure panel password and ports in the **Settings** page.
+    
+    Note: if you change the panel/SOCKS5 ports inside the container, you must also update the `ports:` mapping in `docker-compose.yml` and recreate the container for host access.
 
 5.  **Logs**
     View real-time service logs in the **Logs** page.
@@ -150,8 +151,8 @@ To expose publicly (not recommended), update `docker-compose.yml` ports to `"108
 Run directly on Ubuntu/Debian without Docker.
 
 ```bash
-git clone https://github.com/CrisRain/warppanel.git
-cd warppanel
+git clone https://github.com/CrisRain/lumina.git
+cd lumina
 chmod +x linux_install.sh
 sudo ./linux_install.sh
 ```

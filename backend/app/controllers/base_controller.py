@@ -2,6 +2,7 @@ import asyncio
 import logging
 import json
 import os
+import httpx
 from abc import ABC, abstractmethod
 from typing import Dict, Optional, Union, List
 
@@ -137,33 +138,48 @@ class WarpBackendController(ABC):
         return base_status
 
     async def _fetch_ip_info(self) -> Optional[Dict]:
-        """Fetch IP info via SOCKS5 proxy"""
+        """Fetch IP info via SOCKS5 proxy using httpx, with direct fallback"""
         apis = [
             "http://ip-api.com/json/?fields=status,message,query,country,city,isp",
             "https://ipinfo.io/json",
             "https://ifconfig.me/all.json"
         ]
         
-        for api_url in apis:
-            try:
-                cmd = ["curl", "-s", "--max-time", "5"]
-                
-                # Always use proxy for IP check to verify tunnel
-                cmd.extend(["-x", f"socks5h://127.0.0.1:{self.socks5_port}"])
-                cmd.append(api_url)
-                
-                # logger.debug(f"Fetching IP info from {api_url}...")
-                rc, stdout, _ = await self._run_command(cmd, timeout=8)
-
-                if rc == 0 and stdout:
+        proxy_url = f"socks5h://127.0.0.1:{self.socks5_port}"
+        
+        # Try via SOCKS5 proxy first
+        try:
+            async with httpx.AsyncClient(proxy=proxy_url, timeout=8.0) as client:
+                for api_url in apis:
                     try:
-                        data = json.loads(stdout)
-                        return self._parse_ip_data(data, api_url)
-                    except json.JSONDecodeError:
+                        response = await client.get(api_url)
+                        response.raise_for_status()
+                        data = response.json()
+                        result = self._parse_ip_data(data, api_url)
+                        if result:
+                            return result
+                    except Exception as e:
+                        logger.warning(f"IP info fetch failed via proxy ({api_url}): {e}")
                         continue
-                        
-            except Exception:
-                pass
+        except Exception as e:
+            logger.warning(f"Failed to create proxy client (socks5 port {self.socks5_port}): {e}")
+        
+        # Fallback: try direct connection (useful for TUN mode or when socat isn't ready)
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                for api_url in apis:
+                    try:
+                        response = await client.get(api_url)
+                        response.raise_for_status()
+                        data = response.json()
+                        result = self._parse_ip_data(data, api_url)
+                        if result:
+                            logger.info(f"IP info fetched via direct connection ({api_url})")
+                            return result
+                    except Exception:
+                        continue
+        except Exception as e:
+            logger.warning(f"Direct IP info fetch also failed: {e}")
                 
         return None
 

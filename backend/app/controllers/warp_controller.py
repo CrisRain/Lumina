@@ -6,6 +6,7 @@ Automatically selects between usque and official backends based on environment
 import os
 import logging
 import asyncio
+import shutil
 from typing import Union
 from .usque_controller import UsqueController
 from .official_controller import OfficialController
@@ -19,6 +20,11 @@ class WarpController:
     _instance: Union[UsqueController, OfficialController, None] = None
     _current_backend: str = None
     _socks5_port: int = 1080
+
+    @classmethod
+    def _check_official_available(cls) -> Union[None, str]:
+        missing = [b for b in ("warp-cli", "warp-svc") if shutil.which(b) is None]
+        return f"Official backend unavailable: missing {', '.join(missing)}" if missing else None
     
     @classmethod
     def get_instance(cls, socks5_port: int = None) -> Union[UsqueController, OfficialController]:
@@ -30,6 +36,12 @@ class WarpController:
             cls._socks5_port = socks5_port
 
         backend = os.getenv("WARP_BACKEND", "usque").lower()
+        if backend == "official":
+            err = cls._check_official_available()
+            if err:
+                logger.warning(f"{err}; falling back to usque")
+                backend = "usque"
+                os.environ["WARP_BACKEND"] = "usque"
         
         # Create new instance if needed
         if cls._instance is None or cls._current_backend != backend:
@@ -53,6 +65,11 @@ class WarpController:
         """
         if new_backend not in ["usque", "official"]:
             raise ValueError(f"Invalid backend: {new_backend}. Use 'usque' or 'official'")
+
+        if new_backend == "official":
+            err = cls._check_official_available()
+            if err:
+                raise ValueError(err)
         
         current_backend = cls._current_backend or os.getenv("WARP_BACKEND", "usque")
         if current_backend == new_backend and cls._instance:
@@ -76,7 +93,8 @@ class WarpController:
         # Ensure SOCKS5 port is released before switching
         port = cls._socks5_port
         logger.info(f"Waiting for port {port} to be released...")
-        for _ in range(10): # Wait up to 5 seconds
+        port_free = False
+        for _ in range(30): # Wait up to 15 seconds
             try:
                 # Use asyncio to check port
                 reader, writer = await asyncio.open_connection('127.0.0.1', port)
@@ -86,22 +104,12 @@ class WarpController:
                 await asyncio.sleep(0.5)
             except (ConnectionRefusedError, OSError):
                 # Connection refused means port is free
+                port_free = True
                 break
         
-        # Force kill if still occupied (last resort)
-        try:
-            import psutil
-            for conn in psutil.net_connections():
-                if conn.laddr.port == port and conn.status == 'LISTEN':
-                    logger.warning(f"Port {port} still in use by PID {conn.pid}, killing...")
-                    try:
-                        psutil.Process(conn.pid).kill()
-                    except:
-                        pass
-        except ImportError:
-            pass
-        except Exception:
-            pass
+        if not port_free:
+            logger.error(f"Port {port} remains occupied after disconnect limit. Switch aborted.")
+            raise RuntimeError(f"Address already in use: Port {port} is still occupied. Please check running processes.")
         
         # Update environment and reset instance
         os.environ["WARP_BACKEND"] = new_backend

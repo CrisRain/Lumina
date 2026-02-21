@@ -6,7 +6,7 @@ GREEN='\033[0;32m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${GREEN}=== WarpPanel Linux Installer ===${NC}"
+echo -e "${GREEN}=== Lumina Linux Installer ===${NC}"
 
 # Check for root
 if [ "$EUID" -ne 0 ]; then 
@@ -31,7 +31,7 @@ echo -e "${GREEN}[1/8] Installing system dependencies...${NC}"
 apt-get update -qq
 apt-get install -y -qq -o Dpkg::Options::="--force-confold" \
     curl gpg lsb-release ca-certificates dbus \
-    python3 python3-pip python3-venv socat \
+    python3 python3-pip python3-venv python3-full socat \
     iputils-ping iproute2 iptables procps supervisor unzip tar jq
 
 # 2. Install Node.js (if not present)
@@ -46,6 +46,7 @@ fi
 # 3. Install Cloudflare WARP
 echo -e "${GREEN}[3/8] Installing Cloudflare WARP...${NC}"
 if ! command -v warp-cli &> /dev/null; then
+    rm -f /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
     curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
     echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list
     apt-get update -qq
@@ -60,12 +61,30 @@ echo -e "${GREEN}[4/8] Installing usque...${NC}"
 # usque — auto-detect latest version
 if [ ! -f /usr/local/bin/usque ]; then
     echo "Downloading usque (latest)..."
-    USQUE_VERSION=$(curl -fsSL https://api.github.com/repos/Diniboy1123/usque/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+    LATEST_TAG=$(curl -fsSL https://api.github.com/repos/Diniboy1123/usque/releases/latest | jq -r '.tag_name')
+    USQUE_VERSION=$(echo "$LATEST_TAG" | sed 's/^v//')
+    
     echo "Detected usque version: ${USQUE_VERSION}"
-    curl -L -o /tmp/usque.zip "https://github.com/Diniboy1123/usque/releases/download/v${USQUE_VERSION}/usque_${USQUE_VERSION}_linux_amd64.zip"
+    
+    # Construct URL for linux amd64
+    DOWNLOAD_URL="https://github.com/Diniboy1123/usque/releases/download/${LATEST_TAG}/usque_${USQUE_VERSION}_linux_amd64.zip"
+    
+    curl -L -o /tmp/usque.zip "$DOWNLOAD_URL"
+    
+    if [ ! -s /tmp/usque.zip ]; then
+        echo -e "${RED}Failed to download usque. Check network or version.${NC}"
+        exit 1
+    fi
+    
     unzip -o /tmp/usque.zip -d /tmp/
-    mv /tmp/usque /usr/local/bin/usque
-    chmod +x /usr/local/bin/usque
+    if [ -f "/tmp/usque" ]; then
+        mv /tmp/usque /usr/local/bin/usque
+        chmod +x /usr/local/bin/usque
+        echo "Usque installed to /usr/local/bin/usque"
+    else
+        echo -e "${RED}Usque binary not found in zip.${NC}"
+        # Try finding it in subfolder if structure changed, or fail
+    fi
     rm -f /tmp/usque.zip
 else
     echo "usque already installed"
@@ -73,12 +92,18 @@ fi
 
 # 5. Setup Python Environment
 echo -e "${GREEN}[5/8] Setting up Python environment...${NC}"
-cd "${PROJECT_ROOT}/controller-app"
+if [ ! -d "${PROJECT_ROOT}/backend" ]; then
+    echo -e "${RED}Error: 'backend' directory not found in ${PROJECT_ROOT}${NC}"
+    exit 1
+fi
+
+cd "${PROJECT_ROOT}/backend"
 # Create venv if not exists
 if [ ! -d "venv" ]; then
     python3 -m venv venv
 fi
 source venv/bin/activate
+pip install -U pip -q
 pip install -q -r requirements.txt
 
 # 6. Build Frontend
@@ -87,9 +112,9 @@ cd "${PROJECT_ROOT}/frontend"
 npm install --silent
 npm run build
 
-# Link frontend dist to controller static
+# Link frontend dist to backend static
 echo "Deploying frontend build..."
-STATIC_TARGET="${PROJECT_ROOT}/controller-app/static"
+STATIC_TARGET="${PROJECT_ROOT}/backend/static"
 rm -rf "${STATIC_TARGET}"
 mkdir -p "${STATIC_TARGET}"
 cp -r dist/* "${STATIC_TARGET}/"
@@ -105,19 +130,20 @@ echo -e "${GREEN}[8/8] Configuring Supervisor...${NC}"
 # Stop systemd warp-svc to let supervisor manage it
 systemctl disable --now warp-svc 2>/dev/null || true
 
-# Write supervisor config (use single-quotes to prevent premature expansion of variables)
-VENV_UVICORN="${PROJECT_ROOT}/controller-app/venv/bin/uvicorn"
-CONTROLLER_DIR="${PROJECT_ROOT}/controller-app"
-STATIC_DIR="${PROJECT_ROOT}/controller-app/static"
+# Write supervisor config
+VENV_UVICORN="${PROJECT_ROOT}/backend/venv/bin/uvicorn"
+BACKEND_DIR="${PROJECT_ROOT}/backend"
+# Ensure we point to the static dir we just populated
+STATIC_DIR="${PROJECT_ROOT}/backend/static"
 
 cat > /etc/supervisor/conf.d/warppool.conf <<SUPERVISOREOF
 [program:warppool-api]
 command=${VENV_UVICORN} app.main:app --host 0.0.0.0 --port ${PANEL_PORT}
-directory=${CONTROLLER_DIR}
+directory=${BACKEND_DIR}
 user=root
 autostart=true
 autorestart=true
-startsecs=3
+startsecs=5
 redirect_stderr=true
 stdout_logfile=/var/log/warppool/api.log
 stdout_logfile_maxbytes=10MB
@@ -163,9 +189,6 @@ SUPERVISOREOF
 
 # Verify config was written correctly
 echo "Supervisor config written to /etc/supervisor/conf.d/warppool.conf"
-echo "  uvicorn: ${VENV_UVICORN}"
-echo "  workdir: ${CONTROLLER_DIR}"
-echo "  static:  ${STATIC_DIR}"
 
 # Reload supervisor
 supervisorctl reread
@@ -180,4 +203,4 @@ echo -e "${GREEN}=== Installation Complete ===${NC}"
 supervisorctl status
 echo ""
 echo -e "Web UI: ${GREEN}http://localhost:${PANEL_PORT}${NC}"
-echo -e "SOCKS5: ${GREEN}socks5://127.0.0.1:${SOCKS5_PORT}${NC} (after connecting)"
+echo -e "SOCKS5: ${GREEN}socks5://127.0.0.1:${SOCKS5_PORT}${NC} (only active if connected)"

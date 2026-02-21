@@ -102,8 +102,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue';
-import axios from 'axios';
+import { ref, computed, onMounted } from 'vue';
 import { 
   GlobeAltIcon, 
   WrenchScrewdriverIcon,
@@ -111,13 +110,13 @@ import {
   ExclamationTriangleIcon
 } from '@heroicons/vue/24/outline';
 import { ShieldCheckIcon, ServerStackIcon } from '@heroicons/vue/24/solid';
+import { useStatus, useWarpActions } from '../composables/usePolling';
 
-const customEndpoint = ref('');
+const { statusData } = useStatus();
+const { rotateIP, isLoading: isRotating, apiCall } = useWarpActions();
+
 const isProcessing = ref(false);
-const isRotating = ref(false);
-const statusData = ref({});
 const restartRequired = ref(false);
-let socket = null;
 
 // Port config (loaded from API)
 const socks5Port = ref(1080);
@@ -129,36 +128,42 @@ const portsChanged = computed(() => {
   return socks5Port.value !== savedSocks5Port.value || panelPort.value !== savedPanelPort.value;
 });
 
+const loadPorts = async () => {
+  const data = await apiCall('get', '/config/ports');
+  if (!data) return;
 
-const rotateIP = async () => {
-  isRotating.value = true;
-  isProcessing.value = true;
-  await apiCall('post', '/api/rotate');
-  setTimeout(() => {
-    isRotating.value = false;
-    isProcessing.value = false;
-  }, 1000);
+  socks5Port.value = Number(data.socks5_port ?? 1080);
+  panelPort.value = Number(data.panel_port ?? 8000);
+  savedSocks5Port.value = socks5Port.value;
+  savedPanelPort.value = panelPort.value;
+  restartRequired.value = false;
 };
 
-// WebSocket for status sync
-const connectWebSocket = () => {
-  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${wsProtocol}//${window.location.host}/ws/status`;
-  socket = new WebSocket(wsUrl);
-  socket.onmessage = (event) => {
-    const message = JSON.parse(event.data);
-    if (message.type === 'status') {
-      statusData.value = message.data;
-    }
-  };
+const savePorts = async () => {
+  if (!portsChanged.value) return;
+
+  const socks5 = Number(socks5Port.value);
+  const panel = Number(panelPort.value);
+  const inRange = (p) => Number.isInteger(p) && p >= 1 && p <= 65535;
+  if (!inRange(socks5) || !inRange(panel)) {
+    alert('Invalid port number (must be 1-65535)');
+    return;
+  }
+
+  isProcessing.value = true;
+  const res = await apiCall('post', '/config/ports', { socks5_port: socks5, panel_port: panel });
+  isProcessing.value = false;
+
+  if (!res?.success) return;
+
+  socks5Port.value = Number(res.socks5_port ?? socks5);
+  panelPort.value = Number(res.panel_port ?? panel);
+  savedSocks5Port.value = socks5Port.value;
+  savedPanelPort.value = panelPort.value;
+  restartRequired.value = Boolean(res.restart_required);
 };
 
 onMounted(() => {
-  connectWebSocket();
   loadPorts();
-});
-
-onUnmounted(() => {
-  if (socket) socket.close();
 });
 </script>

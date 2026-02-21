@@ -4,3 +4,4 @@ requests
 websockets
 cryptography
 psutil
+httpx[socks]

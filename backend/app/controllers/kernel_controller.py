@@ -54,6 +54,8 @@ class KernelVersionManager:
     def get_active_version(self, backend: str) -> Optional[str]:
         """Get the currently selected version for a backend"""
         if backend == "official":
+            if shutil.which("warp-cli") is None:
+                return "Not Installed"
             try:
                 # Try to get real version
                 result = subprocess.run(["warp-cli", "--version"], capture_output=True, text=True, timeout=2)
@@ -134,20 +136,25 @@ class KernelVersionManager:
             "update_available": False
         }
         
-        # 1. Get local installed version
+        if backend == "official":
+            active = self.get_active_version(backend)
+            if active and active not in ("Not Installed", "System Default"):
+                version_info["version"] = active.replace("warp-cli", "").strip()
+            return version_info
+            
+        # 1. Get local installed version for usque
         try:
             cmd = [binary_path, "version"]
-            # On windows, sometimes full path is needed or current dir behavior differs
             cwd = os.path.dirname(binary_path) if os.path.isabs(binary_path) else None
             
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=2, cwd=cwd)
             if result.returncode == 0:
                 output = result.stdout.strip()
-                match = re.search(r'version\s+v?(\d+\.\d+\.\d+)', output, re.IGNORECASE)
+                match = re.search(r'version\s+v?(\d+\.\d+\.\d+(?:\.\d+)?)', output, re.IGNORECASE)
                 if match:
                     version_info["version"] = match.group(1)
                 else:
-                    match = re.search(r'v?(\d+\.\d+\.\d+)', output)
+                    match = re.search(r'v?(\d+\.\d+\.\d+(?:\.\d+)?)', output)
                     if match:
                         version_info["version"] = match.group(1)
                     else:

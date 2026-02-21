@@ -6,8 +6,6 @@
         <h2 class="text-2xl font-bold text-gray-900">Dashboard</h2>
         <p class="text-sm text-gray-500">Manage your secure connection</p>
       </div>
-      
-      <!-- Quick Controls removed -->
     </div>
 
     <!-- Main Grid -->
@@ -25,7 +23,7 @@
           <div class="relative z-10 flex flex-col items-center">
             <!-- Connection Button -->
             <button 
-              @click="toggleConnection" 
+              @click="onToggle" 
               :disabled="isLoading"
               class="relative group transition-all duration-500 outline-none"
             >
@@ -144,8 +142,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue';
-import axios from 'axios';
+import { ref, computed, watch } from 'vue';
 import { 
   PowerIcon, 
   ShieldCheckIcon, 
@@ -153,36 +150,16 @@ import {
   DocumentDuplicateIcon, 
   CommandLineIcon,
   ArrowRightIcon,
-  ChevronDownIcon,
-  CheckIcon
 } from '@heroicons/vue/24/outline';
+import { useStatus, useLogs, useWarpActions } from '../composables/usePolling';
 
-// State
-const statusData = ref({
-  status: 'disconnected',
-  ip: '---',
-  location: '---',
-  city: 'Unknown',
-  country: 'Unknown',
-  details: {}
-});
-const isLoading = ref(false);
-const error = ref(null);
-const logs = ref([]);
+const { isConnected, ipAddress, city, country, isp, protocol, proxyAddress } = useStatus();
+const { logs } = useLogs();
+const { isLoading, toggleConnection } = useWarpActions();
+
 const activityContainer = ref(null);
-let socket = null;
 
-// Computed
-const isConnected = computed(() => statusData.value.status === 'connected');
-const ipAddress = computed(() => statusData.value.ip || statusData.value.details?.ip || 'Unknown');
-const city = computed(() => statusData.value.city || statusData.value.details?.city || 'Unknown');
-const country = computed(() => statusData.value.country || statusData.value.location || 'Unknown');
-const isp = computed(() => statusData.value.isp || statusData.value.details?.isp || 'Cloudflare WARP');
-const protocol = computed(() => statusData.value.warp_protocol || statusData.value.protocol || 'MASQUE');
-const proxyAddress = computed(() => statusData.value.proxy_address || 'socks5://127.0.0.1:1080');
-
-const warpMode = computed(() => statusData.value.warp_mode || 'proxy');
-const backend = computed(() => statusData.value.backend || 'usque');
+const onToggle = () => toggleConnection(isConnected.value);
 
 // Show last 15 logs, newest at bottom (natural reading order)
 const recentLogs = computed(() => logs.value.slice(-15));
@@ -190,48 +167,14 @@ const recentLogs = computed(() => logs.value.slice(-15));
 // Extract time portion from timestamp like "12:13:15" or "2026-02-11 12:13:15"
 const formatTime = (ts) => {
   if (!ts) return '';
-  // If it contains a space (date + time), take the time part
   const parts = ts.split(' ');
   const timePart = parts.length > 1 ? parts[parts.length - 1] : ts;
-  // Return HH:MM:SS (strip milliseconds if present)
   return timePart.split('.')[0];
-};
-
-const scrollActivity = () => {
-  nextTick(() => {
-    if (activityContainer.value) {
-      activityContainer.value.scrollTop = activityContainer.value.scrollHeight;
-    }
-  });
-};
-
-// API Helpers
-const apiCall = async (method, url, data = null) => {
-  try {
-    const response = await axios[method](url, data);
-    return response.data;
-  } catch (err) {
-    console.error(`API Error (${method} ${url}):`, err);
-    return null;
-  }
-};
-
-// Actions
-const toggleConnection = async () => {
-  isLoading.value = true;
-  if (isConnected.value) {
-    await apiCall('post', '/api/disconnect');
-  } else {
-    await apiCall('post', '/api/connect');
-  }
-  // Loading state will be cleared by next status update or timeout
-  setTimeout(() => isLoading.value = false, 2000);
 };
 
 const copyToClipboard = async (text) => {
   try {
     await navigator.clipboard.writeText(text);
-    // Could add toast notification here
   } catch (err) {
     console.error('Failed to copy:', err);
   }
@@ -245,44 +188,4 @@ const getLogColor = (level) => {
     default: return 'border-gray-500';
   }
 };
-
-// WebSocket
-const connectWebSocket = () => {
-  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${wsProtocol}//${window.location.host}/ws/status`;
-  
-  socket = new WebSocket(wsUrl);
-
-  socket.onopen = () => {
-    // console.log('WebSocket connected');
-    // Fetch initial logs
-    apiCall('get', '/api/logs?limit=20').then(data => {
-        if(data && data.logs) logs.value = data.logs;
-    });
-  };
-
-  socket.onmessage = (event) => {
-    const message = JSON.parse(event.data);
-    if (message.type === 'status') {
-      statusData.value = message.data;
-      if (isLoading.value && statusData.value.status === 'connected') isLoading.value = false;
-    } else if (message.type === 'log') {
-      logs.value.push(message.data);
-      if (logs.value.length > 50) logs.value.shift();
-      scrollActivity();
-    }
-  };
-
-  socket.onclose = () => {
-    setTimeout(connectWebSocket, 3000);
-  };
-};
-
-onMounted(() => {
-  connectWebSocket();
-});
-
-onUnmounted(() => {
-  if (socket) socket.close();
-});
 </script>

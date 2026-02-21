@@ -133,8 +133,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
-import axios from 'axios';
+import { ref, computed, watch, nextTick } from 'vue';
 import { 
   MagnifyingGlassIcon, 
   TrashIcon, 
@@ -144,14 +143,15 @@ import {
   ExclamationTriangleIcon,
   InformationCircleIcon
 } from '@heroicons/vue/24/outline';
+import { useLogs } from '../composables/usePolling';
 
-const logs = ref([]);
+const { logs } = useLogs();
+
 const searchQuery = ref('');
 const logLevelFilter = ref('all');
 const autoScroll = ref(true);
 const logsContainer = ref(null);
-const lastUpdate = ref('--:--:--');
-let socket = null;
+const lastUpdate = ref(new Date().toLocaleTimeString());
 
 const filteredLogs = computed(() => {
   let filtered = logs.value;
@@ -190,41 +190,10 @@ const scrollToBottom = () => {
   }
 };
 
-const connectWebSocket = () => {
-  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${wsProtocol}//${window.location.host}/ws/status`;
-  socket = new WebSocket(wsUrl);
-
-  socket.onopen = () => {
-    fetchLogs();
-  };
-
-  socket.onmessage = (event) => {
-    const message = JSON.parse(event.data);
-    if (message.type === 'log') {
-      logs.value.push(message.data);
-      if (logs.value.length > 2000) logs.value.shift();
-      lastUpdate.value = new Date().toLocaleTimeString();
-      scrollToBottom();
-    }
-  };
-
-  socket.onclose = () => {
-    setTimeout(connectWebSocket, 3000);
-  };
-};
-
-const fetchLogs = async () => {
-  try {
-    const response = await axios.get('/api/logs?limit=500');
-    if (response.data && response.data.logs) {
-      logs.value = response.data.logs;
-      scrollToBottom();
-    }
-  } catch (err) {
-    console.error('Failed to fetch logs:', err);
-  }
-};
+watch(logs, () => {
+    lastUpdate.value = new Date().toLocaleTimeString();
+    scrollToBottom();
+}, { deep: true });
 
 const clearLogs = () => logs.value = [];
 
@@ -234,19 +203,11 @@ const downloadLogs = () => {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `warp-logs-${new Date().toISOString().split('T')[0]}.txt`;
+  a.download = `lumina-logs-${new Date().toISOString().split('T')[0]}.txt`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 };
 
-onMounted(() => {
-  connectWebSocket();
-  lastUpdate.value = new Date().toLocaleTimeString();
-});
-
-onUnmounted(() => {
-  if (socket) socket.close();
-});
 </script>
