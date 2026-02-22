@@ -6,7 +6,7 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/crisocean/lumina?style=flat-square&logo=docker)](https://hub.docker.com/r/crisocean/lumina)
 [![Vue 3](https://img.shields.io/badge/前端-Vue_3-4FC08D?style=flat-square&logo=vue.js)](https://vuejs.org/)
 [![FastAPI](https://img.shields.io/badge/后端-FastAPI-009688?style=flat-square&logo=fastapi)](https://fastapi.tiangolo.com/)
-[![Version](https://img.shields.io/badge/版本-v1.3-orange?style=flat-square)](VERSION)
+[![Version](https://img.shields.io/badge/版本-v1.5-orange?style=flat-square)](VERSION)
 
 **现代化 Cloudflare WARP 管理面板**
 
