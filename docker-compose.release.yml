@@ -9,6 +9,8 @@ services:
     environment:
       - WARP_BACKEND=usque # Options: 'usque' (default), 'official'
       # - PANEL_PASSWORD=secret # Optional: Set a password for the panel
+      # - SOCKS5_PORT=1080      # Optional: Set the proxy port (will override config.json)
+      # - PANEL_PORT=8000       # Optional: Set the Web UI port (will override config.json)
     cap_add:
       - NET_ADMIN
     devices:

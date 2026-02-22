@@ -39,11 +39,6 @@ class ConfigManager:
                 logger.error(f"Failed to load configuration from {self._config_file}: {e}")
         else:
             logger.info(f"No configuration file found at {self._config_file}, using defaults.")
-            # Verify if env vars set initial password if config doesn't exist
-            env_pass = os.getenv("PANEL_PASSWORD")
-            if env_pass:
-                self._config["panel_password"] = env_pass
-                self.save() # Save it so it persists
 
     def save(self):
         """Save configuration to disk."""
@@ -56,6 +51,23 @@ class ConfigManager:
             logger.error(f"Failed to save configuration: {e}")
 
     def get(self, key: str, default=None):
+        # Environment variables always take precedence
+        env_key = key.upper()
+        env_val = os.getenv(env_key)
+        
+        if env_val is not None:
+            # Try to convert to the type in self._config if it exists
+            original_val = self._config.get(key, default)
+            if isinstance(original_val, int):
+                try:
+                    return int(env_val)
+                except ValueError:
+                    logger.warning(f"Invalid integer value for {env_key}: {env_val}")
+            elif isinstance(original_val, bool):
+                return env_val.lower() in ('true', '1', 'yes')
+            else:
+                return env_val
+
         return self._config.get(key, default)
 
     def set(self, key: str, value):
@@ -65,14 +77,12 @@ class ConfigManager:
     # Convenience accessors
     @property
     def socks5_port(self) -> int:
-        return int(self._config.get("socks5_port", 1080))
+        return self.get("socks5_port", 1080)
 
     @property
     def panel_port(self) -> int:
-        return int(self._config.get("panel_port", 8000))
+        return self.get("panel_port", 8000)
 
     @property
     def panel_password(self) -> str:
-        return self._config.get("panel_password", "")
-        
-
+        return self.get("panel_password", "")
