@@ -230,12 +230,3 @@ class WarpBackendController(ABC):
             await asyncio.sleep(1)
         return False
 
-    async def rotate_ip_simple(self) -> bool:
-        """Rotate IP by reconnecting (default implementation)"""
-        logger.info(f"Rotating IP ({self.__class__.__name__}: disconnect + reconnect)...")
-        await self.disconnect()
-        await self.wait_for_status("disconnected", timeout=5)
-        await asyncio.sleep(2)
-        if await self.connect():
-            return await self.wait_for_status("connected", timeout=15)
-        return False

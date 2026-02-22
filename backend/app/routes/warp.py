@@ -77,23 +77,3 @@ async def disconnect(user: str = Depends(auth_handler.get_current_user)):
         raise HTTPException(status_code=500, detail="Failed to disconnect WARP")
     return await controller.get_status()
 
-@router.post("/rotate")
-async def rotate_ip(user: str = Depends(auth_handler.get_current_user)):
-    """
-    轮换 IP 地址（简单模式：断开重连）
-    """
-    controller = WarpController.get_instance()
-    
-    # Use built-in rotate if available
-    if hasattr(controller, 'rotate_ip_simple'):
-        success = await controller.rotate_ip_simple()
-    else:
-        # Fallback manual rotation
-        await controller.disconnect()
-        await asyncio.sleep(1)
-        success = await controller.connect()
-    
-    if not success:
-        raise HTTPException(status_code=500, detail="Failed to rotate (reconnect failed)")
-    
-    return await controller.get_status()

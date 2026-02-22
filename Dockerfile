@@ -137,6 +137,7 @@ RUN chmod +x /etc/cont-init.d/01-init.sh \
 # ---- Application code (changes most often → last) ----
 COPY backend/app /app/app
 COPY --from=frontend-build /build/dist /app/static
+COPY VERSION /app/VERSION
 
 # ---- Ports ----
 # 8000: Web UI + API (default, configurable via PANEL_PORT)

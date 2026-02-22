@@ -3,14 +3,20 @@ import os
 def get_app_version():
     """Reads the application version from the VERSION file in the project root."""
     try:
-        # Assuming VERSION file is in the project root (d:\Projects\lumina\VERSION)
-        # and this file is in d:\Projects\lumina\backend\app\utils
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        version_file = os.path.join(base_dir, 'VERSION')
+        paths_to_check = [
+            'VERSION',
+            '../VERSION',
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), 'VERSION'),
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'VERSION'),
+            '/app/VERSION'
+        ]
         
-        if os.path.exists(version_file):
-            with open(version_file, 'r') as f:
-                return f.read().strip()
+        for p in paths_to_check:
+            if os.path.exists(p):
+                with open(p, 'r') as f:
+                    return f.read().strip()
+                    
         return "Unknown"
-    except Exception:
+    except Exception as e:
+        print(f"Error reading version: {e}")
         return "Unknown"

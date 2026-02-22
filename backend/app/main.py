@@ -77,11 +77,13 @@ async def auto_update_task():
     except Exception as e:
         logger.warning(f"Failed to adopt system installation: {e}")
 
-    logger.info("Running kernel auto-update check...")
-    try:
-        await run_blocking(KernelVersionManager.get_instance().auto_update, "usque")
-    except Exception as e:
-        logger.error(f"Auto-update failed: {e}")
+    # Note: Automatic update check on startup is disabled by default.
+    # Users can trigger updates manually via the UI.
+    # logger.info("Running kernel auto-update check...")
+    # try:
+    #     await run_blocking(KernelVersionManager.get_instance().auto_update, "usque")
+    # except Exception as e:
+    #     logger.error(f"Auto-update failed: {e}")
 
 # Include Routers
 # /api/status, /api/version, /api/logs

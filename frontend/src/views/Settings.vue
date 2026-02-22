@@ -73,30 +73,6 @@
           </p>
         </div>
       </div>
-
-
-      <!-- Advanced Actions -->
-      <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 md:col-span-2">
-        <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
-          <WrenchScrewdriverIcon class="w-5 h-5 text-gray-500" />
-          Advanced Actions
-        </h3>
-        
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <button 
-            @click="rotateIP"
-            :disabled="isProcessing"
-            class="flex flex-col items-center justify-center p-4 rounded-xl border border-gray-200 hover:border-orange-300 hover:bg-orange-50 transition-all group"
-          >
-            <ArrowPathIcon class="w-8 h-8 text-gray-400 group-hover:text-orange-500 mb-2 transition-colors" :class="{ 'animate-spin': isRotating }" />
-            <span class="text-sm font-medium text-gray-900">Rotate IP</span>
-            <span class="text-xs text-gray-500 mt-1">Request new identity</span>
-          </button>
-          
-          <!-- Placeholder for other actions like "Reset Keys" or "Clean Logs" -->
-        </div>
-      </div>
-
     </div>
   </div>
 </template>
@@ -105,15 +81,13 @@
 import { ref, computed, onMounted } from 'vue';
 import { 
   GlobeAltIcon, 
-  WrenchScrewdriverIcon,
-  ArrowPathIcon,
   ExclamationTriangleIcon
 } from '@heroicons/vue/24/outline';
 import { ShieldCheckIcon, ServerStackIcon } from '@heroicons/vue/24/solid';
 import { useStatus, useWarpActions } from '../composables/usePolling';
 
 const { statusData } = useStatus();
-const { rotateIP, isLoading: isRotating, apiCall } = useWarpActions();
+const { apiCall } = useWarpActions();
 
 const isProcessing = ref(false);
 const restartRequired = ref(false);
