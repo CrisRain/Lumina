@@ -49,51 +49,40 @@ const router = createRouter({
 
 // Navigation Guard
 router.beforeEach(async (to, from, next) => {
-    const publicPages = ['/login'];
-    const authRequired = !to.meta.public;
-    const token = localStorage.getItem('auth_token');
-
-    if (authRequired) {
-        if (!token) {
-            // Check if backend actually requires auth (optional optimization: call /api/auth/check)
-            // For now, assume if we are on client side and no token, try checking if backend allows anonymous?
-            // Actually, backend returns 401 if protected and no token.
-            // But we might want to check if password is set at all.
-            // For simplicity, if no token, check auth status.
-
-            try {
-                // Determine API URL
-                const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
-                await axios.get(`${apiBase}/auth/check`);
-                // If 200, it means either no password set (admin) or we are somehow auth'd (cookie?)
-                // But we use bearer token.
-                // If backend has no password set, get_current_user returns "admin" freely.
-                next();
-            } catch (error) {
-                if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-                    next('/login');
-                } else {
-                    // network error? allow or block?
-                    // Blocking is safer
-                    next('/login');
-                }
-            }
-        } else {
-            // Validate token
-            try {
-                const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
-                // Set default header for this check
-                await axios.get(`${apiBase}/auth/check`, {
-                    headers: { Authorization: `Bearer ${token}` }
-                });
-                next();
-            } catch (error) {
-                localStorage.removeItem('auth_token');
-                next('/login');
-            }
-        }
-    } else {
+    if (to.meta.public) {
         next();
+        return;
+    }
+
+    const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
+
+    try {
+        // Step 1: Check if a password is configured (public endpoint, no token needed)
+        const statusRes = await axios.get(`${apiBase}/auth/status`);
+        const requiresAuth = statusRes.data.requires_auth;
+
+        if (!requiresAuth) {
+            // No password configured — open access, let everyone through
+            next();
+            return;
+        }
+
+        // Step 2: Password is configured — we must have a valid token
+        const token = localStorage.getItem('auth_token');
+        if (!token) {
+            next('/login');
+            return;
+        }
+
+        // Step 3: Validate the token with the backend
+        await axios.get(`${apiBase}/auth/check`, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        next();
+    } catch (error) {
+        // Token invalid / expired, or network error
+        localStorage.removeItem('auth_token');
+        next('/login');
     }
 });
 
