@@ -137,8 +137,8 @@ class WarpController:
         if cls._instance:
             try:
                 await cls._instance.disconnect()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Error disconnecting during reset: {e}")
         cls._instance = None
         cls._current_backend = None
 

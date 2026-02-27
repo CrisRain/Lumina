@@ -35,7 +35,7 @@ class ConfigManager:
                     data = json.load(f)
                     self._config.update(data)
                 logger.info(f"Configuration loaded from {self._config_file}")
-            except Exception as e:
+            except (OSError, json.JSONDecodeError) as e:
                 logger.error(f"Failed to load configuration from {self._config_file}: {e}")
         else:
             logger.info(f"No configuration file found at {self._config_file}, using defaults.")
@@ -47,7 +47,7 @@ class ConfigManager:
             with open(self._config_file, "w") as f:
                 json.dump(self._config, f, indent=4)
             logger.info(f"Configuration saved to {self._config_file}")
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Failed to save configuration: {e}")
 
     def get(self, key: str, default=None):

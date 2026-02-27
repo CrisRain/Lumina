@@ -20,7 +20,8 @@ class AuthHandler:
             cls._instance = AuthHandler()
         return cls._instance
 
-    def verify_password(self, password: str) -> bool:
+    @staticmethod
+    def verify_password(password: str) -> bool:
         """Verify the provided password against config."""
         config_pass = ConfigManager.get_instance().panel_password
         if not config_pass:

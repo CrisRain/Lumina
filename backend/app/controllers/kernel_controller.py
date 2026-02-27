@@ -46,7 +46,7 @@ class KernelVersionManager:
             for entry in os.scandir(backend_dir):
                 if entry.is_dir() and not entry.name.startswith('.'):
                     versions.append(entry.name)
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Error listing versions for {backend}: {e}")
             
         return sorted(versions, reverse=True)
@@ -61,7 +61,7 @@ class KernelVersionManager:
                 result = subprocess.run(["warp-cli", "--version"], capture_output=True, text=True, timeout=2)
                 if result.returncode == 0:
                     return result.stdout.strip()
-            except:
+            except (subprocess.SubprocessError, FileNotFoundError):
                 pass
             return "System Default"
         
@@ -99,7 +99,7 @@ class KernelVersionManager:
             
             os.symlink(target_path, symlink_path)
             logger.info(f"Updated symlink {symlink_path} -> {target_path}")
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Failed to update symlink: {e}")
 
     def get_binary_path(self, backend: str) -> str:
@@ -150,16 +150,13 @@ class KernelVersionManager:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=2, cwd=cwd)
             if result.returncode == 0:
                 output = result.stdout.strip()
-                match = re.search(r'version\s+v?(\d+\.\d+\.\d+(?:\.\d+)?)', output, re.IGNORECASE)
+                # Simplified regex matching
+                match = re.search(r'(?:version\s+)?v?(\d+\.\d+\.\d+(?:\.\d+)?)', output, re.IGNORECASE)
                 if match:
                     version_info["version"] = match.group(1)
                 else:
-                    match = re.search(r'v?(\d+\.\d+\.\d+(?:\.\d+)?)', output)
-                    if match:
-                        version_info["version"] = match.group(1)
-                    else:
-                         version_info["version"] = output
-        except Exception as e:
+                    version_info["version"] = output
+        except (subprocess.SubprocessError, FileNotFoundError) as e:
             logger.debug(f"Failed to get local version for {backend}: {e}")
             active = self.get_active_version(backend)
             if active:
@@ -194,7 +191,7 @@ class KernelVersionManager:
                     self.config_mgr.set(f"{backend}_latest_version", tag_name)
                     logger.info(f"Latest {backend} version: {tag_name}")
                     return tag_name
-        except Exception as e:
+        except requests.RequestException as e:
             logger.error(f"Failed to check updates for {backend}: {e}")
             
         return None
@@ -271,7 +268,7 @@ class KernelVersionManager:
                          download_url = asset.get("browser_download_url")
                          asset_name = asset.get("name")
                          break
-        except Exception as e:
+        except requests.RequestException as e:
             logger.error(f"Failed to get release info: {e}")
             return False
             
@@ -316,7 +313,7 @@ class KernelVersionManager:
             logger.info(f"Successfully installed {backend} {version}")
             return True
             
-        except Exception as e:
+        except (requests.RequestException, OSError, zipfile.BadZipFile) as e:
             logger.error(f"Download/Install failed: {e}")
             return False
         
@@ -360,7 +357,7 @@ class KernelVersionManager:
                     self.set_active_version(backend, version)
                     logger.info(f"Adopted system installation as managed version {version}")
                     return True
-        except Exception as e:
+        except (subprocess.SubprocessError, OSError) as e:
             logger.error(f"Failed to adopt system installation: {e}")
             
         return False

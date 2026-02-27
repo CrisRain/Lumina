@@ -17,6 +17,6 @@ def get_app_version():
                     return f.read().strip()
                     
         return "Unknown"
-    except Exception as e:
+    except OSError as e:
         print(f"Error reading version: {e}")
         return "Unknown"
