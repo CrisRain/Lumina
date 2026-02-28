@@ -9,7 +9,6 @@ import os
 from typing import Dict
 from .base_controller import WarpBackendController
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class OfficialController(WarpBackendController):

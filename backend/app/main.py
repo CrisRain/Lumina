@@ -1,9 +1,10 @@
 import asyncio
+from contextlib import suppress
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -19,7 +20,7 @@ from .controllers.kernel_controller import KernelVersionManager
 from .controllers.auth_controller import AuthHandler
 
 # Routes
-from .routes import system, auth, config, warp, kernel
+from .routes import system, auth, config, warp, kernel, setup
 
 # Setup logging
 setup_logging()
@@ -39,13 +40,19 @@ _thread_pool = ThreadPoolExecutor(max_workers=4)
 app = FastAPI(title="Lumina")
 
 # CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+cors_origins_env = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+cors_origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
+if cors_origins:
+    allow_all = "*" in cors_origins
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"] if allow_all else cors_origins,
+        allow_credentials=not allow_all,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    logger.info("CORS disabled (CORS_ALLOW_ORIGINS is empty)")
 
 # Startup Events
 @app.on_event("startup")
@@ -92,6 +99,9 @@ app.include_router(system.router, prefix="/api", tags=["System"])
 # /api/auth/login, /api/auth/check
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 
+# /api/setup/*
+app.include_router(setup.router, prefix="/api/setup", tags=["Setup"])
+
 # /api/config/*
 app.include_router(config.router, prefix="/api/config", tags=["Config"])
 
@@ -100,6 +110,38 @@ app.include_router(kernel.router, prefix="/api/kernel", tags=["Kernel"])
 
 # Warp routes (mixed paths: /api/connect, /api/backend/..., /api/rotate)
 app.include_router(warp.router, prefix="/api", tags=["Warp"])
+
+
+@app.websocket("/ws/status")
+async def ws_status(websocket: WebSocket):
+    config = ConfigManager.get_instance()
+    token = websocket.query_params.get("token")
+
+    if config.initialized and config.panel_password and not auth_handler.is_token_valid(token):
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    last_log_id = log_collector.latest_id
+
+    try:
+        while True:
+            status = await WarpController.get_instance().get_status()
+            await websocket.send_json({"type": "status", "data": status})
+
+            new_logs = log_collector.get_since(last_log_id, limit=500)
+            for entry in new_logs:
+                await websocket.send_json({"type": "log", "data": entry})
+                last_log_id = entry["id"]
+
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.debug(f"WebSocket /ws/status closed: {e}")
+    finally:
+        with suppress(Exception):
+            await websocket.close()
 
 
 # Static Files & Catch-all

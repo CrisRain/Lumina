@@ -20,6 +20,7 @@ const statusData = ref({
 const logs = ref([]);
 const isLoading = ref(false);
 const error = ref(null);
+let lastLogId = 0;
 
 // WebSocket Logic
 let socket = null;
@@ -34,6 +35,19 @@ const apiCall = async (method, url, data = null) => {
         console.error(`API Error (${method} ${url}):`, err);
         error.value = err;
         return null;
+    }
+};
+
+const appendLogs = (entries = []) => {
+    if (!Array.isArray(entries) || entries.length === 0) return;
+    for (const entry of entries) {
+        if (!entry || typeof entry.id !== 'number') continue;
+        if (entry.id <= lastLogId) continue;
+        logs.value.push(entry);
+        lastLogId = entry.id;
+    }
+    if (logs.value.length > 300) {
+        logs.value = logs.value.slice(-300);
     }
 };
 
@@ -58,16 +72,21 @@ const connectWebSocket = () => {
     // Determine path based on environment
     // In production (served by FastAPI), /ws/status is correct
     // In dev (Vite), we might need to proxy /ws to backend
-    const wsUrl = `${wsProtocol}//${wsHost}/ws/status`;
+    const token = localStorage.getItem('auth_token');
+    const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+    const wsUrl = `${wsProtocol}//${wsHost}/ws/status${qs}`;
 
-    console.log('Connecting to WebSocket:', wsUrl);
     socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
-        console.log('WebSocket Connected');
-        // Initial fetch of logs
-        apiCall('get', '/logs?limit=50').then(data => {
-            if (data && data.logs) logs.value = data.logs;
+        // Initial pull once per websocket connection, then rely on ws incremental logs.
+        apiCall('get', `/logs?limit=50&since_id=${lastLogId}`).then(data => {
+            if (data && data.logs) {
+                appendLogs(data.logs);
+                if (typeof data.latest_id === 'number' && data.latest_id > lastLogId) {
+                    lastLogId = data.latest_id;
+                }
+            }
         });
     };
 
@@ -80,8 +99,7 @@ const connectWebSocket = () => {
                      isLoading.value = false;
                 }
             } else if (message.type === 'log') {
-                logs.value.push(message.data);
-                if (logs.value.length > 200) logs.value.shift();
+                appendLogs([message.data]);
             }
         } catch (e) {
             console.error('Error parsing WS message:', e);
@@ -89,7 +107,6 @@ const connectWebSocket = () => {
     };
 
     socket.onclose = () => {
-        console.log('WebSocket Disconnected');
         socket = null;
         if (reconnectTimeout) clearTimeout(reconnectTimeout);
         reconnectTimeout = setTimeout(connectWebSocket, 3000);

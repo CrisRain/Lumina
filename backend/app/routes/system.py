@@ -19,13 +19,21 @@ async def get_version():
     return {"version": get_app_version()}
 
 @router.get("/logs")
-async def get_logs(limit: int = 100, user: str = Depends(auth_handler.get_current_user)):
+async def get_logs(
+    limit: int = 100,
+    since_id: int = 0,
+    user: str = Depends(auth_handler.get_current_user),
+):
     """
     Get recent logs. 
     """
-    logs = list(log_collector.logs)
-            
+    if since_id > 0:
+        logs = log_collector.get_since(since_id, limit=limit)
+    else:
+        logs = log_collector.get_recent(limit=limit)
+
     return {
         "total": len(logs),
-        "logs": logs[-limit:]
+        "latest_id": log_collector.latest_id,
+        "logs": logs
     }

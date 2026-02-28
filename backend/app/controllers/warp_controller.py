@@ -11,7 +11,6 @@ from typing import Union
 from .usque_controller import UsqueController
 from .official_controller import OfficialController
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class WarpController:

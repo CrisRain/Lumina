@@ -11,7 +11,6 @@ from typing import Optional, Dict
 from .kernel_controller import KernelVersionManager
 from .base_controller import WarpBackendController
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class UsqueController(WarpBackendController):

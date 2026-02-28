@@ -2,15 +2,14 @@ version: '3.8'
 
 services:
   lumina:
-    # 使用 Docker Hub 上的预构建镜像
+    # Use prebuilt image from Docker Hub
     image: crisocean/lumina:latest
     container_name: lumina-client
     restart: unless-stopped
     environment:
       - WARP_BACKEND=usque # Options: 'usque' (default), 'official'
-      # - PANEL_PASSWORD=secret # Optional: Set a password for the panel
-      # - SOCKS5_PORT=1080      # Optional: Set the proxy port (will override config.json)
-      # - PANEL_PORT=8000       # Optional: Set the Web UI port (will override config.json)
+      # - SOCKS5_PORT=1080      # Optional: Set the proxy port (runtime override)
+      # - PANEL_PORT=8000       # Optional: Set the Web UI port (runtime override)
     cap_add:
       - NET_ADMIN
     devices:

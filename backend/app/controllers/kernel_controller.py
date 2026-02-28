@@ -8,6 +8,7 @@ import platform
 import zipfile
 import stat
 import re
+from pathlib import Path
 from typing import List, Optional, Dict
 from .config_controller import ConfigManager
 
@@ -31,6 +32,17 @@ class KernelVersionManager:
         if cls._instance is None:
             cls._instance = KernelVersionManager()
         return cls._instance
+
+    @staticmethod
+    def _safe_extract_zip(zip_ref: zipfile.ZipFile, target_dir: str) -> None:
+        base_path = Path(target_dir).resolve()
+        for member in zip_ref.infolist():
+            member_path = (base_path / member.filename).resolve()
+            try:
+                member_path.relative_to(base_path)
+            except ValueError as exc:
+                raise ValueError(f"Unsafe zip entry detected: {member.filename}") from exc
+            zip_ref.extract(member, base_path)
 
     def list_versions(self, backend: str) -> List[str]:
         """List available versions for a backend"""
@@ -297,7 +309,7 @@ class KernelVersionManager:
                         
             logger.info("Extracting...")
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(target_dir)
+                self._safe_extract_zip(zip_ref, target_dir)
                 
             os.remove(zip_path)
             
@@ -313,7 +325,7 @@ class KernelVersionManager:
             logger.info(f"Successfully installed {backend} {version}")
             return True
             
-        except (requests.RequestException, OSError, zipfile.BadZipFile) as e:
+        except (requests.RequestException, OSError, zipfile.BadZipFile, ValueError) as e:
             logger.error(f"Download/Install failed: {e}")
             return False
         

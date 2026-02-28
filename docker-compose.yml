@@ -13,7 +13,6 @@ services:
       - /dev/net/tun:/dev/net/tun
     environment:
       - WARP_BACKEND=usque # Options: 'usque' (default), 'official'
-      # - PANEL_PASSWORD=secret # Optional: Set a password for the panel
     stop_signal: SIGTERM
     ports:
       - "8000:8000" # Web UI (served by FastAPI)
