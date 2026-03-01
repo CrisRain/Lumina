@@ -62,6 +62,7 @@ import {
   Cog6ToothIcon, 
   CommandLineIcon,
   CpuChipIcon,
+  ServerStackIcon,
   XMarkIcon
 } from '@heroicons/vue/24/outline';
 import { ref, onMounted } from 'vue';
@@ -76,6 +77,7 @@ defineEmits(['close']);
 
 const navItems = [
   { name: 'Dashboard', path: '/', icon: HomeIcon },
+  { name: 'Nodes', path: '/nodes', icon: ServerStackIcon },
   { name: 'Kernel', path: '/kernel', icon: CpuChipIcon },
   { name: 'Logs', path: '/logs', icon: CommandLineIcon },
   { name: 'Settings', path: '/settings', icon: Cog6ToothIcon },

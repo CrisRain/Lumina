@@ -1,2 +1,4 @@
 #!/bin/sh
+# Cloudflare warp-svc uses Rust logging; default to info to reduce noisy DEBUG output.
+export RUST_LOG="${RUST_LOG:-INFO}"
 exec /usr/bin/warp-svc

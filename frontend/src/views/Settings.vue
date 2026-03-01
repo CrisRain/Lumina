@@ -2,13 +2,10 @@
   <div class="space-y-6">
     <div>
       <h2 class="text-2xl font-bold text-gray-900">Settings</h2>
-      <p class="text-sm text-gray-500">Configure connection parameters and preferences</p>
+      <p class="text-sm text-gray-500">Configure runtime ports and account security</p>
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-      
-
-
       <!-- Port Configuration -->
       <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 md:col-span-2">
         <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
@@ -73,24 +70,113 @@
           </p>
         </div>
       </div>
+
+      <!-- Security Center -->
+      <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 md:col-span-2">
+        <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+          <ShieldCheckIcon class="w-5 h-5 text-emerald-500" />
+          Security Center
+        </h3>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div class="space-y-4">
+            <div class="p-4 rounded-xl border border-emerald-100 bg-emerald-50/50">
+              <p class="text-xs text-emerald-700 font-semibold uppercase tracking-wide">Sessions</p>
+              <p class="mt-1 text-2xl font-bold text-emerald-900">{{ activeSessions }}</p>
+              <p class="mt-1 text-xs text-emerald-700">Active panel sessions currently valid.</p>
+            </div>
+
+            <div class="flex flex-col sm:flex-row gap-3">
+              <button
+                @click="logoutOtherSessions"
+                :disabled="isSecurityProcessing"
+                class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {{ isSecurityProcessing ? 'PROCESSING...' : 'LOG OUT OTHER SESSIONS' }}
+              </button>
+              <button
+                @click="logoutCurrentSession"
+                :disabled="isSecurityProcessing"
+                class="px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-800 text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                LOG OUT THIS SESSION
+              </button>
+            </div>
+          </div>
+
+          <div class="space-y-3">
+            <label class="block text-sm font-medium text-gray-700">Current Password</label>
+            <input
+              v-model="currentPassword"
+              type="password"
+              placeholder="Enter current password"
+              class="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 outline-none transition-all text-sm"
+              :disabled="isSecurityProcessing"
+            />
+
+            <label class="block text-sm font-medium text-gray-700">New Password</label>
+            <input
+              v-model="newPassword"
+              type="password"
+              minlength="8"
+              placeholder="At least 8 characters"
+              class="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 outline-none transition-all text-sm"
+              :disabled="isSecurityProcessing"
+            />
+
+            <label class="block text-sm font-medium text-gray-700">Confirm New Password</label>
+            <input
+              v-model="confirmNewPassword"
+              type="password"
+              minlength="8"
+              placeholder="Repeat new password"
+              class="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 outline-none transition-all text-sm"
+              :disabled="isSecurityProcessing"
+            />
+
+            <p v-if="securityError" class="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              {{ securityError }}
+            </p>
+            <p v-if="securitySuccess" class="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+              {{ securitySuccess }}
+            </p>
+
+            <div class="flex items-center justify-end pt-1">
+              <button
+                @click="changePassword"
+                :disabled="isSecurityProcessing || !canChangePassword"
+                class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {{ isSecurityProcessing ? 'UPDATING...' : 'UPDATE PASSWORD' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue';
-import { 
-  GlobeAltIcon, 
-  ExclamationTriangleIcon
-} from '@heroicons/vue/24/outline';
-import { ShieldCheckIcon, ServerStackIcon } from '@heroicons/vue/24/solid';
-import { useStatus, useWarpActions } from '../composables/usePolling';
+import axios from 'axios';
+import { ExclamationTriangleIcon, ShieldCheckIcon, ServerStackIcon } from '@heroicons/vue/24/outline';
+import { useRouter } from 'vue-router';
+import { useWarpActions } from '../composables/usePolling';
 
-const { statusData } = useStatus();
 const { apiCall } = useWarpActions();
+const router = useRouter();
+const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
 
 const isProcessing = ref(false);
 const restartRequired = ref(false);
+const isSecurityProcessing = ref(false);
+const activeSessions = ref(1);
+const currentPassword = ref('');
+const newPassword = ref('');
+const confirmNewPassword = ref('');
+const securityError = ref('');
+const securitySuccess = ref('');
 
 // Port config (loaded from API)
 const socks5Port = ref(1080);
@@ -102,6 +188,14 @@ const portsChanged = computed(() => {
   return socks5Port.value !== savedSocks5Port.value || panelPort.value !== savedPanelPort.value;
 });
 
+const canChangePassword = computed(() => {
+  return (
+    currentPassword.value.length > 0 &&
+    newPassword.value.length >= 8 &&
+    confirmNewPassword.value.length >= 8
+  );
+});
+
 const loadPorts = async () => {
   const data = await apiCall('get', '/config/ports');
   if (!data) return;
@@ -111,6 +205,88 @@ const loadPorts = async () => {
   savedSocks5Port.value = socks5Port.value;
   savedPanelPort.value = panelPort.value;
   restartRequired.value = false;
+};
+
+const loadSessions = async () => {
+  try {
+    const res = await axios.get(`${apiBase}/auth/sessions`);
+    activeSessions.value = Number(res.data?.active_sessions ?? 1);
+  } catch {
+    activeSessions.value = 1;
+  }
+};
+
+const resetSecurityMessages = () => {
+  securityError.value = '';
+  securitySuccess.value = '';
+};
+
+const changePassword = async () => {
+  resetSecurityMessages();
+
+  if (newPassword.value !== confirmNewPassword.value) {
+    securityError.value = 'New passwords do not match.';
+    return;
+  }
+  if (newPassword.value.length < 8) {
+    securityError.value = 'New password must be at least 8 characters.';
+    return;
+  }
+
+  isSecurityProcessing.value = true;
+  try {
+    const res = await axios.post(`${apiBase}/auth/password`, {
+      current_password: currentPassword.value,
+      new_password: newPassword.value
+    });
+
+    currentPassword.value = '';
+    newPassword.value = '';
+    confirmNewPassword.value = '';
+    activeSessions.value = Number(res.data?.active_sessions ?? 1);
+
+    const dropped = Number(res.data?.logged_out_others ?? 0);
+    securitySuccess.value = dropped > 0
+      ? `Password updated. Logged out ${dropped} other session(s).`
+      : 'Password updated.';
+  } catch (err) {
+    securityError.value = err?.response?.data?.detail || 'Failed to update password.';
+  } finally {
+    isSecurityProcessing.value = false;
+  }
+};
+
+const logoutOtherSessions = async () => {
+  resetSecurityMessages();
+  isSecurityProcessing.value = true;
+  try {
+    const res = await axios.post(`${apiBase}/auth/logout-all`, { keep_current: true });
+    activeSessions.value = Number(res.data?.active_sessions ?? 1);
+    const removed = Number(res.data?.removed_sessions ?? 0);
+    securitySuccess.value = removed > 0
+      ? `Logged out ${removed} other session(s).`
+      : 'No other active sessions found.';
+  } catch (err) {
+    securityError.value = err?.response?.data?.detail || 'Failed to log out other sessions.';
+  } finally {
+    isSecurityProcessing.value = false;
+  }
+};
+
+const logoutCurrentSession = async () => {
+  resetSecurityMessages();
+  if (!confirm('Log out current session now?')) return;
+
+  isSecurityProcessing.value = true;
+  try {
+    await axios.post(`${apiBase}/auth/logout`);
+  } catch {
+    // If token is already invalid, proceed with local logout anyway.
+  } finally {
+    localStorage.removeItem('auth_token');
+    isSecurityProcessing.value = false;
+    router.push('/login');
+  }
 };
 
 const savePorts = async () => {
@@ -139,5 +315,6 @@ const savePorts = async () => {
 
 onMounted(() => {
   loadPorts();
+  loadSessions();
 });
 </script>

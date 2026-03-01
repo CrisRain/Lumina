@@ -9,7 +9,6 @@ import os
 from typing import Dict
 from .base_controller import WarpBackendController
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class OfficialController(WarpBackendController):
@@ -29,26 +28,19 @@ class OfficialController(WarpBackendController):
 
     async def execute_command(self, command: str):
         """Execute warp-cli command"""
-        try:
-            rc, stdout, stderr = await self._run_command(command, timeout=10)
-            if rc != 0:
-                logger.error(f"Command '{command}' failed: {stderr.strip()}")
-                return None
-            return stdout.strip()
-        except Exception as e:
-            logger.error(f"Error executing '{command}': {e}")
+        rc, stdout, stderr = await self._run_command(command, timeout=10)
+        if rc != 0:
+            logger.error(f"Command '{command}' failed: {stderr.strip()}")
             return None
+        return stdout.strip()
 
     async def _is_daemon_responsive(self) -> bool:
         """Check if warp-svc is running AND responsive"""
-        try:
-            rc, stdout, _ = await self._run_command("s6-svstat -o up /run/service/warp-svc")
-            if rc != 0 or stdout.strip() != "true":
-                return False
-            rc, _, _ = await self._run_command("warp-cli --accept-tos status", timeout=2)
-            return rc == 0
-        except Exception:
+        rc, stdout, _ = await self._run_command("s6-svstat -o up /run/service/warp-svc")
+        if rc != 0 or stdout.strip() != "true":
             return False
+        rc, _, _ = await self._run_command("warp-cli --accept-tos status", timeout=2)
+        return rc == 0
 
     async def _check_daemon_running(self) -> bool:
         return await self._is_daemon_responsive()
@@ -234,14 +226,11 @@ class OfficialController(WarpBackendController):
         """Check if WARP is connected"""
         if not await self._check_daemon_running():
             return False
-        try:
-            rc, stdout, _ = await self._run_command("warp-cli --accept-tos status", timeout=3)
-            if rc != 0:
-                return False
-            output = stdout.lower()
-            return "connected" in output and "disconnected" not in output
-        except Exception:
+        rc, stdout, _ = await self._run_command("warp-cli --accept-tos status", timeout=3)
+        if rc != 0:
             return False
+        output = stdout.lower()
+        return "connected" in output and "disconnected" not in output
 
     # ------------------------------------------------------------------
     # Status

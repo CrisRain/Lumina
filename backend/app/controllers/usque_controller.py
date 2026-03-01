@@ -11,7 +11,6 @@ from typing import Optional, Dict
 from .kernel_controller import KernelVersionManager
 from .base_controller import WarpBackendController
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class UsqueController(WarpBackendController):
@@ -102,19 +101,6 @@ class UsqueController(WarpBackendController):
             logger.error(f"Failed to start usque proxy: {e}")
             return False
 
-            logger.info("Waiting for usque proxy to become ready...")
-            for _ in range(15):
-                if await self._is_proxy_connected():
-                    logger.info("usque proxy started successfully")
-                    return True
-                await asyncio.sleep(1)
-
-            logger.error("usque proxy failed to start (timeout)")
-            return False
-        except Exception as e:
-            logger.error(f"Failed to start usque proxy: {e}")
-            return False
-
     @staticmethod
     def _write_s6_env(key: str, value: str) -> None:
         """Persist an env var into the s6 container environment store."""
@@ -144,11 +130,8 @@ class UsqueController(WarpBackendController):
 
     async def _is_proxy_connected(self) -> bool:
         """Check if usque SOCKS5 proxy is running"""
-        try:
-            rc, stdout, _ = await self._run_command("s6-svstat -o up /run/service/usque")
-            if rc != 0 or stdout.strip() != "true":
-                return False
-        except Exception:
+        rc, stdout, _ = await self._run_command("s6-svstat -o up /run/service/usque")
+        if rc != 0 or stdout.strip() != "true":
             return False
         return await self._is_port_open(self.socks5_port)
 

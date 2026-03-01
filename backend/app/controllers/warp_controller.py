@@ -11,7 +11,6 @@ from typing import Union
 from .usque_controller import UsqueController
 from .official_controller import OfficialController
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class WarpController:
@@ -137,8 +136,8 @@ class WarpController:
         if cls._instance:
             try:
                 await cls._instance.disconnect()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Error disconnecting during reset: {e}")
         cls._instance = None
         cls._current_backend = None
 

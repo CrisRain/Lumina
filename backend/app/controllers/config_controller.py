@@ -1,25 +1,31 @@
 import json
-import os
 import logging
-from typing import Optional
+import os
+import sqlite3
+import threading
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 class ConfigManager:
     _instance = None
-    
-    def __init__(self):
-        # Allow overriding via env (useful for docker vs local dev)
-        data_dir = os.getenv("WARP_DATA_DIR", "/app/data")
-        self._config_file = os.path.join(data_dir, "config.json")
-        
-        self._config = {
-            "socks5_port": 1080,
-            "panel_port": 8000,
-            "panel_password": "",  # Empty means disabled/no auth
 
-        }
-        self.load()
+    _DEFAULTS = {
+        "initialized": False,
+        "socks5_port": 1080,
+        "panel_port": 8000,
+        "panel_password": "",
+    }
+
+    def __init__(self):
+        data_dir = os.getenv("WARP_DATA_DIR", "/app/data")
+        os.makedirs(data_dir, exist_ok=True)
+        self._db_path = os.path.join(data_dir, "config.db")
+        self._legacy_config_path = os.path.join(data_dir, "config.json")
+        self._lock = threading.RLock()
+        self._init_db()
+        self._migrate_legacy_json_if_needed()
+        self._seed_defaults()
 
     @classmethod
     def get_instance(cls):
@@ -27,62 +33,102 @@ class ConfigManager:
             cls._instance = ConfigManager()
         return cls._instance
 
+    def _connect(self):
+        return sqlite3.connect(self._db_path, check_same_thread=False)
+
+    def _init_db(self):
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.commit()
+
+    def _seed_defaults(self):
+        with self._lock:
+            with self._connect() as conn:
+                for key, value in self._DEFAULTS.items():
+                    serialized = json.dumps(value)
+                    conn.execute(
+                        "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+                        (key, serialized),
+                    )
+                conn.commit()
+
+    def _migrate_legacy_json_if_needed(self):
+        if not os.path.exists(self._legacy_config_path):
+            return
+        try:
+            with open(self._legacy_config_path, "r", encoding="utf-8") as f:
+                legacy_data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(f"Skipping legacy config migration ({self._legacy_config_path}): {e}")
+            return
+
+        allowed_keys = set(self._DEFAULTS.keys())
+        with self._lock:
+            with self._connect() as conn:
+                for key, value in legacy_data.items():
+                    if key not in allowed_keys:
+                        continue
+                    conn.execute(
+                        "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+                        (key, json.dumps(value)),
+                    )
+                conn.commit()
+        logger.info(f"Migrated legacy configuration from {self._legacy_config_path} to SQLite")
+
     def load(self):
-        """Load configuration from disk."""
-        if os.path.exists(self._config_file):
-            try:
-                with open(self._config_file, "r") as f:
-                    data = json.load(f)
-                    self._config.update(data)
-                logger.info(f"Configuration loaded from {self._config_file}")
-            except Exception as e:
-                logger.error(f"Failed to load configuration from {self._config_file}: {e}")
-        else:
-            logger.info(f"No configuration file found at {self._config_file}, using defaults.")
+        """Compatibility no-op: settings are read on demand from SQLite."""
+        return
 
     def save(self):
-        """Save configuration to disk."""
+        """Compatibility no-op: settings are persisted on each set()."""
+        return
+
+    def get(self, key: str, default: Any = None):
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        if not row:
+            return default
+        raw_value = row[0]
         try:
-            os.makedirs(os.path.dirname(self._config_file), exist_ok=True)
-            with open(self._config_file, "w") as f:
-                json.dump(self._config, f, indent=4)
-            logger.info(f"Configuration saved to {self._config_file}")
-        except Exception as e:
-            logger.error(f"Failed to save configuration: {e}")
+            return json.loads(raw_value)
+        except json.JSONDecodeError:
+            return raw_value
 
-    def get(self, key: str, default=None):
-        # Environment variables always take precedence
-        env_key = key.upper()
-        env_val = os.getenv(env_key)
-        
-        if env_val is not None:
-            # Try to convert to the type in self._config if it exists
-            original_val = self._config.get(key, default)
-            if isinstance(original_val, int):
-                try:
-                    return int(env_val)
-                except ValueError:
-                    logger.warning(f"Invalid integer value for {env_key}: {env_val}")
-            elif isinstance(original_val, bool):
-                return env_val.lower() in ('true', '1', 'yes')
-            else:
-                return env_val
-
-        return self._config.get(key, default)
-
-    def set(self, key: str, value):
-        self._config[key] = value
-        self.save()
+    def set(self, key: str, value: Any):
+        serialized = json.dumps(value)
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO settings (key, value) VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                    """,
+                    (key, serialized),
+                )
+                conn.commit()
 
     # Convenience accessors
     @property
+    def initialized(self) -> bool:
+        return bool(self.get("initialized", False))
+
+    @property
     def socks5_port(self) -> int:
-        return self.get("socks5_port", 1080)
+        return int(self.get("socks5_port", 1080))
 
     @property
     def panel_port(self) -> int:
-        return self.get("panel_port", 8000)
+        return int(self.get("panel_port", 8000))
 
     @property
     def panel_password(self) -> str:
-        return self.get("panel_password", "")
+        return str(self.get("panel_password", ""))

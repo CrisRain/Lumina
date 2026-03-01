@@ -9,6 +9,13 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 auth_handler = AuthHandler.get_instance()
 kernel_mgr = KernelVersionManager.get_instance()
+ALLOWED_BACKENDS = {"usque", "official"}
+
+def normalize_backend(backend: str, default: str = "usque") -> str:
+    value = (backend or default).strip().lower()
+    if value not in ALLOWED_BACKENDS:
+        raise HTTPException(status_code=400, detail="Invalid backend. Use 'usque' or 'official'.")
+    return value
 
 # Helper for running blocking functions
 async def run_blocking(func, *args):
@@ -20,6 +27,7 @@ async def get_kernel_versions(backend: str = None, user: str = Depends(auth_hand
     """List available versions for the specified backend (or current backend)"""
     if not backend:
         backend = WarpController.get_current_backend()
+    backend = normalize_backend(backend, default="usque")
         
     versions = await run_blocking(kernel_mgr.list_versions, backend)
     # Get current active version (configured)
@@ -28,10 +36,14 @@ async def get_kernel_versions(backend: str = None, user: str = Depends(auth_hand
     # Get detailed info (installed version, latest version)
     info = await run_blocking(kernel_mgr.get_installed_version_info, backend)
     
+    current = current_active or info.get("version") or "Unknown"
+    if current in {"System Default", "Not Installed", "Unknown"} and info.get("version"):
+        current = info.get("version")
+
     return {
         "backend": backend,
         "versions": versions,
-        "current": current_active,
+        "current": current,
         "installed_version": info.get("version"),
         "latest_version": info.get("latest_version"),
         "update_available": info.get("update_available")
@@ -48,10 +60,13 @@ async def get_all_kernel_versions(user: str = Depends(auth_handler.get_current_u
             versions = await run_blocking(kernel_mgr.list_versions, backend)
             current_active = await run_blocking(kernel_mgr.get_active_version, backend)
             info = await run_blocking(kernel_mgr.get_installed_version_info, backend)
+            current = current_active or info.get("version") or "Unknown"
+            if current in {"System Default", "Not Installed", "Unknown"} and info.get("version"):
+                current = info.get("version")
             
             results[backend] = {
                 "versions": versions,
-                "current": current_active,
+                "current": current,
                 "installed_version": info.get("version"),
                 "latest_version": info.get("latest_version"),
                 "update_available": info.get("update_available")
@@ -65,7 +80,7 @@ async def get_all_kernel_versions(user: str = Depends(auth_handler.get_current_u
 @router.post("/check-update")
 async def check_update(request: dict, user: str = Depends(auth_handler.get_current_user)):
     """Manually check for updates"""
-    backend = request.get("backend", "usque")
+    backend = normalize_backend(request.get("backend"), default="usque")
     logger.info(f"Checking for updates for {backend}...")
     
     latest = await run_blocking(kernel_mgr.check_for_updates, backend)
@@ -77,7 +92,7 @@ async def check_update(request: dict, user: str = Depends(auth_handler.get_curre
 @router.post("/update")
 async def perform_update(request: dict, user: str = Depends(auth_handler.get_current_user)):
     """Perform update to latest version"""
-    backend = request.get("backend", "usque")
+    backend = normalize_backend(request.get("backend"), default="usque")
     
     logger.info(f"Triggering manual update for {backend}...")
     updated = await run_blocking(kernel_mgr.auto_update, backend)
@@ -100,6 +115,7 @@ async def set_kernel_version(request: dict, user: str = Depends(auth_handler.get
     
     if not backend or not version:
         raise HTTPException(status_code=400, detail="Missing backend or version")
+    backend = normalize_backend(backend, default="usque")
     
     success = await run_blocking(kernel_mgr.set_active_version, backend, version)
     

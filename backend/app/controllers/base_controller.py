@@ -1,7 +1,5 @@
 import asyncio
 import logging
-import json
-import os
 import httpx
 from abc import ABC, abstractmethod
 from typing import Dict, Optional, Union, List
@@ -45,7 +43,8 @@ class WarpBackendController(ABC):
         """Check if backend is connected"""
         pass
 
-    async def _run_command(self, command: Union[str, List[str]], timeout=None):
+    @staticmethod
+    async def _run_command(command: Union[str, List[str]], timeout=None):
         """Run a shell command or executable"""
         try:
             if isinstance(command, list):
@@ -74,7 +73,7 @@ class WarpBackendController(ABC):
         try:
             rc, stdout, _ = await self._run_command(f"ss -lnt sport = :{port}")
             return f":{port}" in stdout
-        except Exception:
+        except (OSError, asyncio.SubprocessError):
             return False
 
     async def get_status(self) -> Dict:
@@ -137,6 +136,21 @@ class WarpBackendController(ABC):
 
         return base_status
 
+    async def _fetch_from_apis(self, client: httpx.AsyncClient, apis: List[str]) -> Optional[Dict]:
+        for api_url in apis:
+            try:
+                response = await client.get(api_url)
+                response.raise_for_status()
+                data = response.json()
+                result = self._parse_ip_data(data, api_url)
+                if result:
+                    return result
+            except httpx.RequestError as e:
+                logger.warning(f"IP info fetch failed ({api_url}): {e}")
+            except Exception as e:
+                logger.warning(f"Error parsing IP info ({api_url}): {e}")
+        return None
+
     async def _fetch_ip_info(self) -> Optional[Dict]:
         """Fetch IP info via SOCKS5 proxy using httpx, with direct fallback"""
         apis = [
@@ -150,40 +164,26 @@ class WarpBackendController(ABC):
         # Try via SOCKS5 proxy first
         try:
             async with httpx.AsyncClient(proxy=proxy_url, timeout=8.0) as client:
-                for api_url in apis:
-                    try:
-                        response = await client.get(api_url)
-                        response.raise_for_status()
-                        data = response.json()
-                        result = self._parse_ip_data(data, api_url)
-                        if result:
-                            return result
-                    except Exception as e:
-                        logger.warning(f"IP info fetch failed via proxy ({api_url}): {e}")
-                        continue
+                result = await self._fetch_from_apis(client, apis)
+                if result:
+                    return result
         except Exception as e:
             logger.warning(f"Failed to create proxy client (socks5 port {self.socks5_port}): {e}")
         
         # Fallback: try direct connection (useful for TUN mode or when socat isn't ready)
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
-                for api_url in apis:
-                    try:
-                        response = await client.get(api_url)
-                        response.raise_for_status()
-                        data = response.json()
-                        result = self._parse_ip_data(data, api_url)
-                        if result:
-                            logger.info(f"IP info fetched via direct connection ({api_url})")
-                            return result
-                    except Exception:
-                        continue
+                result = await self._fetch_from_apis(client, apis)
+                if result:
+                    logger.info(f"IP info fetched via direct connection")
+                    return result
         except Exception as e:
             logger.warning(f"Direct IP info fetch also failed: {e}")
                 
         return None
 
-    def _parse_ip_data(self, data: Dict, api_url: str) -> Dict:
+    @staticmethod
+    def _parse_ip_data(data: Dict, api_url: str) -> Dict:
         """Normalize IP data from different APIs"""
         if "ip-api.com" in api_url:
             if data.get("status") == "success":

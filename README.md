@@ -6,11 +6,11 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/crisocean/lumina?style=flat-square&logo=docker)](https://hub.docker.com/r/crisocean/lumina)
 [![Vue 3](https://img.shields.io/badge/前端-Vue_3-4FC08D?style=flat-square&logo=vue.js)](https://vuejs.org/)
 [![FastAPI](https://img.shields.io/badge/后端-FastAPI-009688?style=flat-square&logo=fastapi)](https://fastapi.tiangolo.com/)
-[![Version](https://img.shields.io/badge/版本-v1.5-orange?style=flat-square)](VERSION)
+[![Version](https://img.shields.io/badge/版本-v1.6-orange?style=flat-square)](VERSION)
 
 **现代化 Cloudflare WARP 管理面板**
 
-[功能特性](#-功能特性) • [技术栈](#️-技术栈) • [快速开始](#-快速开始) • [使用说明](#-使用说明) • [Linux 原生部署](#-linux-原生部署)
+[1.6 新增内容](#whats-new-16) • [核心特性](#core-features) • [快速开始](#quick-start) • [首次初始化](#first-setup) • [使用说明](#usage) • [安全说明](#security) • [开发调试](#dev)
 
 ---
 
@@ -18,143 +18,162 @@
 
 </div>
 
-**Lumina** 是一个专为管理 Cloudflare WARP 客户端而设计的现代化 Web 管理面板。采用精美的 **玻璃拟态（Glassmorphism）** 界面风格，支持在 **官方客户端** 与 **usque** 两种引擎之间无缝切换，让您轻松掌控网络连接。
+Lumina 是一个用于管理 Cloudflare WARP 的 Web 面板，支持 `usque` 与 `official` 双后端切换，提供连接控制、内核管理、日志查看、端口配置以及多节点统一管理能力。
 
-## ✨ 功能特性
+<a id="whats-new-16"></a>
 
-- **🎯 精准的单实例管理**
-  精细化控制 WARP 容器。实时状态同步，低资源占用，完美适配 VPS 或本地部署场景。
+## 🚀 1.6 新增内容
 
-- **🔄 双后端架构**
-  - **`usque` (MASQUE 协议)**：高性能、轻量级 Go 实现，速度极快，资源占用极低（**推荐**）。
-  - **`官方客户端`**：Cloudflare 官方 Linux 客户端，兼容性最佳。
-  - **无缝切换**：无需重启容器，即可在两种后端之间即时切换。
+- 新增 **多节点管理（Node Manager）**：集中查看本机和远程节点状态，并可远程执行连接/断开、后端切换。
+- 新增 **安全中心（Security Center）**：会话数量查看、下线其他会话、当前会话登出、密码修改。
+- 密码存储升级为 **bcrypt 哈希**，并支持旧明文密码自动迁移。
+- 设置页整合：端口配置与安全能力在同一页面集中管理。
 
-- **🌐 SOCKS5 代理模式**
-  作为 SOCKS5 代理运行，外部应用可通过代理端口（`:1080`）将流量路由至 WARP 网络。
+<a id="core-features"></a>
 
-- **🔧 MASQUE 协议支持**
-  采用现代 HTTP/3 隧道协议，具备更强的抗干扰能力和更快的连接速度。
+## ✨ 核心特性
 
-- **⚡ 性能与响应**
-  - **非阻塞架构**：后端操作全程异步，确保 UI 界面始终流畅响应。
-  - **实时监控**：基于轮询的状态实时更新。
-  - **智能缓存**：高效缓存 IP 与状态信息，最大程度降低系统开销。
+- **双后端引擎**
+  - `usque`：轻量高性能，默认推荐。
+  - `official`：Cloudflare 官方客户端，兼容性优先。
+  - 一键切换后端并自动重连。
 
-- **🎨 沉浸式 UI 设计**
-  基于 Vue 3 + Tailwind CSS v4 构建，完全响应式布局，过渡动画流畅自然。
+- **连接与代理管理**
+  - Web 一键 Connect / Disconnect。
+  - SOCKS5 代理统一管理（默认 `127.0.0.1:1080`）。
 
-- **🛡️ 安全与智能管理**
-  - **安全代理**：SOCKS5 端口默认绑定至 `127.0.0.1`，防止未授权的外部访问。
-  - **日志清洗**：智能过滤冗余连接日志，只展示关键信息。
-  - **内核管理**：支持 `usque` 内核的自动更新与版本管理。
-  - **密码保护**：可为 Web 面板启用可选的登录认证。
+- **多节点统一控制**
+  - 节点列表/健康状态总览（版本、后端、IP、连接状态）。
+  - 支持远程节点连接控制与后端切换。
+
+- **内核版本管理**
+  - 查看已安装版本、切换活跃版本、手动检查更新与升级（`usque`）。
+
+- **实时可观测性**
+  - WebSocket 实时状态与日志推送。
+  - 日志筛选、搜索、下载。
+
+- **安全能力**
+  - 面板登录鉴权。
+  - 会话管理（登出当前会话 / 下线其他会话）。
+  - 密码 bcrypt 哈希存储，降低泄露风险。
 
 ## 🛠️ 技术栈
 
-| 模块 | 技术 | 说明 |
-| :--- | :--- | :--- |
-| **前端** | Vue 3, Vite, Tailwind CSS v4 | 原子化 CSS，高效开发 |
-| **后端** | Python 3.10+, FastAPI, AsyncIO | 高性能异步 Web 框架 |
-| **核心引擎** | Cloudflare WARP 官方 + usque | 官方稳定性 + 社区高性能 |
-| **部署方式** | Docker / Linux 原生 | 容器化或直接安装 |
+| 模块 | 技术 |
+| :--- | :--- |
+| 前端 | Vue 3 + Vite + Tailwind CSS v4 |
+| 后端 | FastAPI + AsyncIO |
+| 核心引擎 | usque / Cloudflare WARP 官方客户端 |
+| 部署方式 | Docker / Linux 原生 |
+
+<a id="quick-start"></a>
 
 ## 🚀 快速开始
 
 ### 前置要求
-- **Docker**（Desktop 或 Engine）
-- **Git**（源码构建时需要）
 
-### 方式一：Docker Hub 拉取镜像（推荐）
+- Docker（Desktop 或 Engine）
+- Linux 主机需支持 `/dev/net/tun`
 
-无需本地构建，直接使用预构建镜像运行。
+### 方式一：使用预构建镜像（推荐）
 
-**1. 创建 `docker-compose.yml`**
-
-```yaml
-services:
-  lumina:
-    image: crisocean/lumina:latest
-    container_name: lumina-client
-    restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    environment:
-      - WARP_BACKEND=usque  # 可选: 'usque'（默认）或 'official'
-      # - PANEL_PASSWORD=secret  # 可选: 为面板设置访问密码
-    ports:
-      - "8000:8000"             # Web 管理面板
-      - "127.0.0.1:1080:1080"   # SOCKS5 代理（仅本地访问）
-    volumes:
-      - lumina_data:/var/lib/cloudflare-warp
-      - lumina_usque:/var/lib/warp
-      - lumina_config:/app/data
-
-volumes:
-  lumina_data:
-  lumina_usque:
-  lumina_config:
-```
-
-**2. 启动服务**
+仓库内已提供 `docker-compose.release.yml`：
 
 ```bash
-docker compose up -d
+docker compose -f docker-compose.release.yml up -d
 ```
 
-### 方式二：源码构建
+### 方式二：源码构建镜像
 
 ```bash
-# 1. 克隆仓库
 git clone https://github.com/CrisRain/lumina.git
 cd lumina
-
-# 2. 构建并启动
 docker compose up --build -d
 ```
 
-启动后，浏览器访问：**[http://localhost:8000](http://localhost:8000)**
+启动后访问：`http://localhost:8000`
 
----
+<a id="first-setup"></a>
+
+## ✅ 首次初始化（必做）
+
+首次启动会自动进入 `/setup` 页面，请完成：
+
+1. 设置管理员密码（至少 8 位）
+2. （可选）修改 SOCKS5 端口与面板端口
+3. 提交后进入登录页
+
+说明：
+- 初始化后配置保存在 `/app/data/config.db`。
+- 面板密码以 bcrypt 哈希存储。
+
+<a id="usage"></a>
 
 ## 📖 使用说明
 
-1. **连接 WARP**
-   点击 **Connect** 按钮即可发起连接。
+### 1) Dashboard
 
-2. **切换后端**
-   通过下拉菜单在 **Usque** 和 **Official** 两种后端之间切换。
+- 查看当前连接状态、出口 IP、地区信息
+- 一键连接与断开
 
-3. **内核管理**
-   进入 **Kernel**（内核）页面，可管理 `usque` 版本、检查更新或切换活跃版本。
+### 2) Nodes（多节点管理）
 
-4. **设置**
-   在 **Settings**（设置）页面中配置面板登录密码及代理端口。
+- 新增远程节点（名称 + Base URL + 可选 Token）
+- 统一查看本机/远程节点状态
+- 对节点执行 `Connect` / `Disconnect` / 后端切换
 
-   > ⚠️ 注意：若在容器内修改了面板端口或 SOCKS5 端口，需同步更新 `docker-compose.yml` 中的 `ports:` 映射，并重新创建容器才能在宿主机上生效。
+### 3) Kernel
 
-5. **日志**
-   在 **Logs**（日志）页面查看实时服务运行日志。
+- 查看和切换 `usque` 版本
+- 检查更新并执行升级
+
+### 4) Settings
+
+- 端口配置：SOCKS5 / Panel Port
+- 安全中心：修改密码、会话管理、主动登出
+
+### 5) Logs
+
+- 实时日志、级别筛选、关键词搜索、下载日志
+
+## 🌐 多节点配置建议
+
+新增远程节点时，`Base URL` 示例：
+
+- `http://192.168.1.10:8000`
+- `https://node.example.com`
+
+若远程节点开启了鉴权，需要填入 Token。你可以在远程节点上通过登录接口获取：
+
+```bash
+curl -X POST "http://REMOTE_NODE:8000/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"password":"YOUR_PANEL_PASSWORD"}'
+```
+
+返回示例：
+
+```json
+{"success": true, "token": "xxxxx"}
+```
+
+将该 `token` 填入 Node Manager 即可。
+
+<a id="security"></a>
 
 ## 🔒 安全说明
 
-> **重要提示**：SOCKS5 代理默认绑定至 `127.0.0.1`，不对外网直接暴露。
-
-如需远程访问代理，推荐使用 SSH 隧道转发：
+- SOCKS5 默认绑定 `127.0.0.1`，不直接暴露公网。
+- 若需远程使用代理，推荐 SSH 隧道：
 
 ```bash
 ssh -L 1080:127.0.0.1:1080 your-server-ip
 ```
 
-如需公开暴露（不推荐），请将 `docker-compose.yml` 中的端口映射修改为 `"1080:1080"`。
-
----
+- 密码采用 bcrypt 哈希存储；旧明文密码会在启动时自动迁移。
 
 ## 🐧 Linux 原生部署
-
-无需 Docker，直接在 Ubuntu / Debian 系统上运行。
 
 ```bash
 git clone https://github.com/CrisRain/lumina.git
@@ -163,20 +182,16 @@ chmod +x linux_install.sh
 sudo ./linux_install.sh
 ```
 
-### 常用管理命令
+常用管理命令：
 
 ```bash
-# 查看服务状态
 sudo supervisorctl status
-
-# 重启所有服务
 sudo supervisorctl restart all
 ```
 
-## 💻 开发调试
+<a id="dev"></a>
 
-<details>
-<summary>本地开发环境搭建</summary>
+## 💻 开发调试
 
 ### 前端
 
@@ -193,8 +208,6 @@ cd backend
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
-
-</details>
 
 ## 📄 开源协议
 

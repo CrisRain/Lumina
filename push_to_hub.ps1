@@ -1,12 +1,12 @@
 $ErrorActionPreference = "Stop"
 
 Write-Host "1. Building Docker Image..." -ForegroundColor Cyan
-docker build --no-cache -t crisocean/lumina:latest .
+docker build -t crisocean/lumina:v1.5 .
 if ($LASTEXITCODE -ne 0) { Write-Error "Build failed"; exit 1 }
 
 Write-Host "2. Pushing to Docker Hub..." -ForegroundColor Cyan
 try {
-    docker push crisocean/lumina:latest
+    docker push crisocean/lumina:v1.5
 }
 catch {
     Write-Warning "Push failed!"
@@ -23,4 +23,4 @@ if ($LASTEXITCODE -ne 0) {
     exit 1 
 }
 
-Write-Host "Done! Image pushed to crisocean/lumina:latest" -ForegroundColor Green
+Write-Host "Done! Image pushed !" -ForegroundColor Green
