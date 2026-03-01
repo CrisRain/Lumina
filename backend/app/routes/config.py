@@ -107,35 +107,27 @@ def _default_ssl_paths() -> Tuple[str, str]:
 def _get_ssl_settings():
     default_cert, default_key = _default_ssl_paths()
 
-    env_enabled = os.getenv("PANEL_SSL_ENABLED")
-    if env_enabled is not None:
-        enabled = _to_bool_env(env_enabled, True)
-    else:
-        enabled = _coerce_bool(config_mgr.get("panel_ssl_enabled", True), True)
+    enabled = _coerce_bool(
+        config_mgr.get("panel_ssl_enabled", _to_bool_env(os.getenv("PANEL_SSL_ENABLED"), True)),
+        True,
+    )
 
-    env_cert_file = os.getenv("PANEL_SSL_CERT_FILE")
-    if env_cert_file is not None and env_cert_file.strip():
-        cert_file = env_cert_file.strip()
-    else:
-        cert_file = str(config_mgr.get("panel_ssl_cert_file", default_cert) or default_cert).strip() or default_cert
+    cert_file = str(config_mgr.get("panel_ssl_cert_file", "") or "").strip()
+    if not cert_file:
+        cert_file = (os.getenv("PANEL_SSL_CERT_FILE", "") or "").strip() or default_cert
 
-    env_key_file = os.getenv("PANEL_SSL_KEY_FILE")
-    if env_key_file is not None and env_key_file.strip():
-        key_file = env_key_file.strip()
-    else:
-        key_file = str(config_mgr.get("panel_ssl_key_file", default_key) or default_key).strip() or default_key
+    key_file = str(config_mgr.get("panel_ssl_key_file", "") or "").strip()
+    if not key_file:
+        key_file = (os.getenv("PANEL_SSL_KEY_FILE", "") or "").strip() or default_key
 
-    env_auto_self_signed = os.getenv("PANEL_SSL_AUTO_SELF_SIGNED")
-    if env_auto_self_signed is not None:
-        auto_self_signed = _to_bool_env(env_auto_self_signed, True)
-    else:
-        auto_self_signed = _coerce_bool(config_mgr.get("panel_ssl_auto_self_signed", True), True)
+    auto_self_signed = _coerce_bool(
+        config_mgr.get("panel_ssl_auto_self_signed", _to_bool_env(os.getenv("PANEL_SSL_AUTO_SELF_SIGNED"), True)),
+        True,
+    )
 
-    env_domain = os.getenv("PANEL_SSL_DOMAIN")
-    if env_domain is not None and env_domain.strip():
-        domain = env_domain.strip()
-    else:
-        domain = str(config_mgr.get("panel_ssl_domain", "localhost") or "localhost").strip() or "localhost"
+    domain = str(config_mgr.get("panel_ssl_domain", "") or "").strip()
+    if not domain:
+        domain = (os.getenv("PANEL_SSL_DOMAIN", "") or "").strip() or "localhost"
 
     return {
         "panel_ssl_enabled": enabled,

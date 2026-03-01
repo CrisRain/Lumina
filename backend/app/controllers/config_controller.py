@@ -20,6 +20,10 @@ class ConfigManager:
         "panel_ssl_key_file": "",
         "panel_ssl_auto_self_signed": True,
         "panel_ssl_domain": "localhost",
+        "panel_http_redirect_status": 308,
+        "panel_http_https_mux_enabled": True,
+        "panel_https_internal_port": 8443,
+        "panel_http_redirect_force_domain": "",
     }
 
     def __init__(self):

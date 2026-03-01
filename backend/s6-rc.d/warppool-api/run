@@ -1,19 +1,85 @@
 #!/command/with-contenv sh
 set -e
 
-PORT="${PANEL_PORT:-8000}"
-SSL_ENABLED="${PANEL_SSL_ENABLED:-true}"
-SSL_CERT="${PANEL_SSL_CERT_FILE:-/app/data/ssl/panel.crt}"
-SSL_KEY="${PANEL_SSL_KEY_FILE:-/app/data/ssl/panel.key}"
-SSL_AUTO_SELF_SIGNED="${PANEL_SSL_AUTO_SELF_SIGNED:-true}"
-SSL_DOMAIN="${PANEL_SSL_DOMAIN:-localhost}"
-HTTP_REDIRECT_ENABLED="${PANEL_HTTP_REDIRECT_ENABLED:-true}"
-REDIRECT_PID=""
+: "${WARP_DATA_DIR:=/app/data}"
+: "${PANEL_PORT:=8000}"
+: "${PANEL_SSL_ENABLED:=true}"
+: "${PANEL_SSL_CERT_FILE:=${WARP_DATA_DIR}/ssl/panel.crt}"
+: "${PANEL_SSL_KEY_FILE:=${WARP_DATA_DIR}/ssl/panel.key}"
+: "${PANEL_SSL_AUTO_SELF_SIGNED:=true}"
+: "${PANEL_SSL_DOMAIN:=localhost}"
+: "${PANEL_HTTP_REDIRECT_STATUS:=308}"
+: "${PANEL_HTTP_HTTPS_MUX_ENABLED:=true}"
+: "${PANEL_HTTPS_INTERNAL_PORT:=8443}"
+: "${PANEL_HTTP_REDIRECT_FORCE_DOMAIN:=}"
+
+CONFIG_DB="${WARP_DATA_DIR}/config.db"
+if [ -f "${CONFIG_DB}" ]; then
+  DB_OVERRIDES="$(PYTHONPATH=/app python3 - "${CONFIG_DB}" <<'PY'
+import json
+import shlex
+import sqlite3
+import sys
+
+db_path = sys.argv[1]
+mapping = {
+    "PANEL_PORT": "panel_port",
+    "PANEL_SSL_ENABLED": "panel_ssl_enabled",
+    "PANEL_SSL_CERT_FILE": "panel_ssl_cert_file",
+    "PANEL_SSL_KEY_FILE": "panel_ssl_key_file",
+    "PANEL_SSL_AUTO_SELF_SIGNED": "panel_ssl_auto_self_signed",
+    "PANEL_SSL_DOMAIN": "panel_ssl_domain",
+    "PANEL_HTTP_REDIRECT_STATUS": "panel_http_redirect_status",
+    "PANEL_HTTP_HTTPS_MUX_ENABLED": "panel_http_https_mux_enabled",
+    "PANEL_HTTPS_INTERNAL_PORT": "panel_https_internal_port",
+    "PANEL_HTTP_REDIRECT_FORCE_DOMAIN": "panel_http_redirect_force_domain",
+}
+
+def to_text(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    return str(value)
+
+conn = sqlite3.connect(db_path)
+try:
+    for env_key, db_key in mapping.items():
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (db_key,)).fetchone()
+        if not row:
+            continue
+        raw = row[0]
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = raw
+        text = to_text(parsed).strip()
+        if env_key in {"PANEL_SSL_CERT_FILE", "PANEL_SSL_KEY_FILE", "PANEL_SSL_DOMAIN"} and not text:
+            continue
+        print(f"{env_key}={shlex.quote(text)}")
+finally:
+    conn.close()
+PY
+)"
+  if [ -n "${DB_OVERRIDES}" ]; then
+    eval "${DB_OVERRIDES}"
+  fi
+fi
+
+PORT="${PANEL_PORT}"
+SSL_ENABLED="${PANEL_SSL_ENABLED}"
+SSL_CERT="${PANEL_SSL_CERT_FILE}"
+SSL_KEY="${PANEL_SSL_KEY_FILE}"
+SSL_AUTO_SELF_SIGNED="${PANEL_SSL_AUTO_SELF_SIGNED}"
+SSL_DOMAIN="${PANEL_SSL_DOMAIN}"
+HTTP_HTTPS_MUX_ENABLED="${PANEL_HTTP_HTTPS_MUX_ENABLED}"
+HTTPS_INTERNAL_PORT="${PANEL_HTTPS_INTERNAL_PORT}"
+MUX_PID=""
 
 cleanup_redirect() {
-  if [ -n "${REDIRECT_PID}" ] && kill -0 "${REDIRECT_PID}" 2>/dev/null; then
-    kill "${REDIRECT_PID}" 2>/dev/null || true
-    wait "${REDIRECT_PID}" 2>/dev/null || true
+  if [ -n "${MUX_PID}" ] && kill -0 "${MUX_PID}" 2>/dev/null; then
+    kill "${MUX_PID}" 2>/dev/null || true
+    wait "${MUX_PID}" 2>/dev/null || true
   fi
 }
 
@@ -29,14 +95,21 @@ ensure_self_signed_certificate(cert_path=cert_path, key_path=key_path, common_na
 PY
 fi
 
-if [ "${SSL_ENABLED}" = "true" ] && [ "${HTTP_REDIRECT_ENABLED}" = "true" ]; then
-  PYTHONPATH=/app python3 -m app.utils.http_redirect &
-  REDIRECT_PID="$!"
-fi
-
 if [ "${SSL_ENABLED}" = "true" ]; then
+  APP_PORT="${PORT}"
+
+  if [ "${HTTP_HTTPS_MUX_ENABLED}" = "true" ]; then
+    if [ "${HTTPS_INTERNAL_PORT}" = "${PORT}" ]; then
+      echo "WARN: PANEL_HTTP_HTTPS_MUX_ENABLED=true but PANEL_HTTPS_INTERNAL_PORT equals PANEL_PORT (${PORT}), skipping mux" >&2
+    else
+      PYTHONPATH=/app python3 -m app.utils.http_tls_multiplexer &
+      MUX_PID="$!"
+      APP_PORT="${HTTPS_INTERNAL_PORT}"
+    fi
+  fi
+
   if [ -f "${SSL_CERT}" ] && [ -f "${SSL_KEY}" ]; then
-    exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT}" --app-dir /app \
+    exec uvicorn app.main:app --host 0.0.0.0 --port "${APP_PORT}" --app-dir /app \
       --ssl-certfile "${SSL_CERT}" --ssl-keyfile "${SSL_KEY}"
   fi
 

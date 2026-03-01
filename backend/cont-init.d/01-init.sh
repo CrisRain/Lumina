@@ -39,9 +39,10 @@ defaults = {
     "PANEL_SSL_KEY_FILE": os.getenv("PANEL_SSL_KEY_FILE", os.path.join(ssl_dir, "panel.key")),
     "PANEL_SSL_AUTO_SELF_SIGNED": os.getenv("PANEL_SSL_AUTO_SELF_SIGNED", "true"),
     "PANEL_SSL_DOMAIN": os.getenv("PANEL_SSL_DOMAIN", "localhost"),
-    "PANEL_HTTP_REDIRECT_ENABLED": os.getenv("PANEL_HTTP_REDIRECT_ENABLED", "true"),
-    "PANEL_HTTP_REDIRECT_PORT": os.getenv("PANEL_HTTP_REDIRECT_PORT", "80"),
     "PANEL_HTTP_REDIRECT_STATUS": os.getenv("PANEL_HTTP_REDIRECT_STATUS", "308"),
+    "PANEL_HTTP_HTTPS_MUX_ENABLED": os.getenv("PANEL_HTTP_HTTPS_MUX_ENABLED", "true"),
+    "PANEL_HTTPS_INTERNAL_PORT": os.getenv("PANEL_HTTPS_INTERNAL_PORT", "8443"),
+    "PANEL_HTTP_REDIRECT_FORCE_DOMAIN": os.getenv("PANEL_HTTP_REDIRECT_FORCE_DOMAIN", ""),
 }
 
 mapping = {
@@ -52,19 +53,19 @@ mapping = {
     "PANEL_SSL_KEY_FILE": "panel_ssl_key_file",
     "PANEL_SSL_AUTO_SELF_SIGNED": "panel_ssl_auto_self_signed",
     "PANEL_SSL_DOMAIN": "panel_ssl_domain",
+    "PANEL_HTTP_REDIRECT_STATUS": "panel_http_redirect_status",
+    "PANEL_HTTP_HTTPS_MUX_ENABLED": "panel_http_https_mux_enabled",
+    "PANEL_HTTPS_INTERNAL_PORT": "panel_https_internal_port",
+    "PANEL_HTTP_REDIRECT_FORCE_DOMAIN": "panel_http_redirect_force_domain",
 }
 
 values = dict(defaults)
-explicit_env_keys = {env_key for env_key in mapping if os.getenv(env_key) is not None}
 
 if os.path.exists(db_path):
     try:
         conn = sqlite3.connect(db_path)
         try:
             for env_key, db_key in mapping.items():
-                # Explicit process env vars (e.g. docker-compose overrides) win over persisted DB values.
-                if env_key in explicit_env_keys:
-                    continue
                 row = conn.execute("SELECT value FROM settings WHERE key = ?", (db_key,)).fetchone()
                 if not row:
                     continue

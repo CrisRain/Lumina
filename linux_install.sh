@@ -194,9 +194,10 @@ PANEL_SSL_CERT_FILE=${PANEL_SSL_CERT_FILE}
 PANEL_SSL_KEY_FILE=${PANEL_SSL_KEY_FILE}
 PANEL_SSL_AUTO_SELF_SIGNED=${PANEL_SSL_AUTO_SELF_SIGNED}
 PANEL_SSL_DOMAIN=${PANEL_SSL_DOMAIN}
-PANEL_HTTP_REDIRECT_ENABLED=${PANEL_HTTP_REDIRECT_ENABLED}
-PANEL_HTTP_REDIRECT_PORT=${PANEL_HTTP_REDIRECT_PORT}
 PANEL_HTTP_REDIRECT_STATUS=${PANEL_HTTP_REDIRECT_STATUS}
+PANEL_HTTP_REDIRECT_FORCE_DOMAIN=${PANEL_HTTP_REDIRECT_FORCE_DOMAIN}
+PANEL_HTTP_HTTPS_MUX_ENABLED=${PANEL_HTTP_HTTPS_MUX_ENABLED}
+PANEL_HTTPS_INTERNAL_PORT=${PANEL_HTTPS_INTERNAL_PORT}
 WARP_SVC_RUST_LOG=${WARP_SVC_RUST_LOG}
 EOF
   chmod 600 "${ENV_FILE}"
@@ -210,12 +211,81 @@ cat > /usr/local/bin/lumina-run-api.sh <<'EOF'
 set -euo pipefail
 ENV_FILE="/etc/lumina/lumina.env"
 [ -f "${ENV_FILE}" ] && set -a && . "${ENV_FILE}" && set +a
-REDIRECT_PID=""
+: "${WARP_DATA_DIR:=/var/lib/lumina}"
+: "${PANEL_PORT:=8000}"
+: "${PANEL_SSL_ENABLED:=true}"
+: "${PANEL_SSL_CERT_FILE:=/etc/lumina/ssl/panel.crt}"
+: "${PANEL_SSL_KEY_FILE:=/etc/lumina/ssl/panel.key}"
+: "${PANEL_SSL_AUTO_SELF_SIGNED:=true}"
+: "${PANEL_SSL_DOMAIN:=localhost}"
+: "${PANEL_HTTP_REDIRECT_STATUS:=308}"
+: "${PANEL_HTTP_HTTPS_MUX_ENABLED:=true}"
+: "${PANEL_HTTPS_INTERNAL_PORT:=8443}"
+: "${PANEL_HTTP_REDIRECT_FORCE_DOMAIN:=}"
+
+CONFIG_DB="${WARP_DATA_DIR}/config.db"
+if [ -f "${CONFIG_DB}" ]; then
+  PYTHON_BIN="${LUMINA_BACKEND_DIR}/venv/bin/python"
+  if [ ! -x "${PYTHON_BIN}" ]; then
+    PYTHON_BIN="$(command -v python3)"
+  fi
+  DB_OVERRIDES="$("${PYTHON_BIN}" - "${CONFIG_DB}" <<'PY'
+import json
+import shlex
+import sqlite3
+import sys
+
+db_path = sys.argv[1]
+mapping = {
+    "PANEL_PORT": "panel_port",
+    "PANEL_SSL_ENABLED": "panel_ssl_enabled",
+    "PANEL_SSL_CERT_FILE": "panel_ssl_cert_file",
+    "PANEL_SSL_KEY_FILE": "panel_ssl_key_file",
+    "PANEL_SSL_AUTO_SELF_SIGNED": "panel_ssl_auto_self_signed",
+    "PANEL_SSL_DOMAIN": "panel_ssl_domain",
+    "PANEL_HTTP_REDIRECT_STATUS": "panel_http_redirect_status",
+    "PANEL_HTTP_HTTPS_MUX_ENABLED": "panel_http_https_mux_enabled",
+    "PANEL_HTTPS_INTERNAL_PORT": "panel_https_internal_port",
+    "PANEL_HTTP_REDIRECT_FORCE_DOMAIN": "panel_http_redirect_force_domain",
+}
+
+def to_text(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    return str(value)
+
+conn = sqlite3.connect(db_path)
+try:
+    for env_key, db_key in mapping.items():
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (db_key,)).fetchone()
+        if not row:
+            continue
+        raw = row[0]
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = raw
+        text = to_text(parsed).strip()
+        if env_key in {"PANEL_SSL_CERT_FILE", "PANEL_SSL_KEY_FILE", "PANEL_SSL_DOMAIN"} and not text:
+            continue
+        print(f"{env_key}={shlex.quote(text)}")
+finally:
+    conn.close()
+PY
+)"
+  if [ -n "${DB_OVERRIDES}" ]; then
+    eval "${DB_OVERRIDES}"
+  fi
+fi
+
+MUX_PID=""
 
 cleanup_redirect() {
-  if [ -n "${REDIRECT_PID}" ] && kill -0 "${REDIRECT_PID}" 2>/dev/null; then
-    kill "${REDIRECT_PID}" 2>/dev/null || true
-    wait "${REDIRECT_PID}" 2>/dev/null || true
+  if [ -n "${MUX_PID}" ] && kill -0 "${MUX_PID}" 2>/dev/null; then
+    kill "${MUX_PID}" 2>/dev/null || true
+    wait "${MUX_PID}" 2>/dev/null || true
   fi
 }
 
@@ -238,16 +308,23 @@ PY
 fi
 
 if [ "${PANEL_SSL_ENABLED:-true}" = "true" ] && [ -f "${PANEL_SSL_CERT_FILE:-}" ] && [ -f "${PANEL_SSL_KEY_FILE:-}" ]; then
-  if [ "${PANEL_HTTP_REDIRECT_ENABLED:-true}" = "true" ]; then
-    PYTHON_BIN="${LUMINA_BACKEND_DIR}/venv/bin/python"
-    if [ ! -x "${PYTHON_BIN}" ]; then
-      PYTHON_BIN="$(command -v python3)"
+  APP_PORT="${PANEL_PORT:-8000}"
+
+  if [ "${PANEL_HTTP_HTTPS_MUX_ENABLED:-true}" = "true" ]; then
+    if [ "${PANEL_HTTPS_INTERNAL_PORT:-8443}" = "${PANEL_PORT:-8000}" ]; then
+      echo "WARN: PANEL_HTTP_HTTPS_MUX_ENABLED=true but PANEL_HTTPS_INTERNAL_PORT equals PANEL_PORT (${PANEL_PORT:-8000}), skipping mux" >&2
+    else
+      PYTHON_BIN="${LUMINA_BACKEND_DIR}/venv/bin/python"
+      if [ ! -x "${PYTHON_BIN}" ]; then
+        PYTHON_BIN="$(command -v python3)"
+      fi
+      PYTHONPATH="${LUMINA_BACKEND_DIR}" "${PYTHON_BIN}" -m app.utils.http_tls_multiplexer &
+      MUX_PID="$!"
+      APP_PORT="${PANEL_HTTPS_INTERNAL_PORT:-8443}"
     fi
-    PYTHONPATH="${LUMINA_BACKEND_DIR}" "${PYTHON_BIN}" -m app.utils.http_redirect &
-    REDIRECT_PID="$!"
   fi
 
-  exec "${LUMINA_UVICORN_BIN}" app.main:app --host 0.0.0.0 --port "${PANEL_PORT:-8000}" --app-dir "${LUMINA_BACKEND_DIR}" \
+  exec "${LUMINA_UVICORN_BIN}" app.main:app --host 0.0.0.0 --port "${APP_PORT}" --app-dir "${LUMINA_BACKEND_DIR}" \
     --ssl-certfile "${PANEL_SSL_CERT_FILE}" --ssl-keyfile "${PANEL_SSL_KEY_FILE}"
 fi
 
@@ -452,9 +529,10 @@ main() {
   PANEL_SSL_KEY_FILE="${PANEL_SSL_KEY_FILE:-${LUMINA_SSL_DIR}/panel.key}"
   PANEL_SSL_AUTO_SELF_SIGNED="${PANEL_SSL_AUTO_SELF_SIGNED:-true}"
   PANEL_SSL_DOMAIN="${PANEL_SSL_DOMAIN:-localhost}"
-  PANEL_HTTP_REDIRECT_ENABLED="${PANEL_HTTP_REDIRECT_ENABLED:-true}"
-  PANEL_HTTP_REDIRECT_PORT="${PANEL_HTTP_REDIRECT_PORT:-80}"
   PANEL_HTTP_REDIRECT_STATUS="${PANEL_HTTP_REDIRECT_STATUS:-308}"
+  PANEL_HTTP_REDIRECT_FORCE_DOMAIN="${PANEL_HTTP_REDIRECT_FORCE_DOMAIN:-}"
+  PANEL_HTTP_HTTPS_MUX_ENABLED="${PANEL_HTTP_HTTPS_MUX_ENABLED:-true}"
+  PANEL_HTTPS_INTERNAL_PORT="${PANEL_HTTPS_INTERNAL_PORT:-8443}"
   WARP_SVC_RUST_LOG="${WARP_SVC_RUST_LOG:-warn}"
 
   validate_port "PANEL_PORT" "${PANEL_PORT}"
