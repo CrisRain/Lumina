@@ -5,3 +5,4 @@ websockets
 cryptography
 psutil
 httpx[socks]
+bcrypt

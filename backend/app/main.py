@@ -20,7 +20,7 @@ from .controllers.kernel_controller import KernelVersionManager
 from .controllers.auth_controller import AuthHandler
 
 # Routes
-from .routes import system, auth, config, warp, kernel, setup
+from .routes import system, auth, config, warp, kernel, setup, nodes
 
 # Setup logging
 setup_logging()
@@ -61,6 +61,11 @@ async def startup_event():
     loop = asyncio.get_running_loop()
     log_collector.set_loop(loop)
     logger.info("Event loop configured for log collecting")
+
+    try:
+        auth_handler.migrate_legacy_password_if_needed()
+    except Exception as e:
+        logger.warning(f"Password migration check failed: {e}")
 
     logger.info(f"Initializing WARP controller (SOCKS5={SOCKS5_PORT}, Panel={PANEL_PORT})...")
     controller = WarpController.get_instance(socks5_port=SOCKS5_PORT)
@@ -107,6 +112,9 @@ app.include_router(config.router, prefix="/api/config", tags=["Config"])
 
 # /api/kernel/*
 app.include_router(kernel.router, prefix="/api/kernel", tags=["Kernel"])
+
+# /api/nodes/*
+app.include_router(nodes.router, prefix="/api/nodes", tags=["Nodes"])
 
 # Warp routes (mixed paths: /api/connect, /api/backend/..., /api/rotate)
 app.include_router(warp.router, prefix="/api", tags=["Warp"])

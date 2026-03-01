@@ -4,10 +4,12 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from ..controllers.config_controller import ConfigManager
 from ..controllers.warp_controller import WarpController
+from ..controllers.auth_controller import AuthHandler
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 config_mgr = ConfigManager.get_instance()
+auth_handler = AuthHandler.get_instance()
 
 
 class SetupRequest(BaseModel):
@@ -31,7 +33,7 @@ async def initialize_panel(req: SetupRequest):
 
     previous_socks5 = config_mgr.socks5_port
     previous_panel_port = config_mgr.panel_port
-    config_mgr.set("panel_password", req.panel_password)
+    config_mgr.set("panel_password", auth_handler.hash_password(req.panel_password))
     config_mgr.set("socks5_port", int(req.socks5_port or 1080))
     config_mgr.set("panel_port", int(req.panel_port or 8000))
     config_mgr.set("initialized", True)

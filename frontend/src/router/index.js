@@ -4,6 +4,7 @@ import Dashboard from '../views/Dashboard.vue';
 import KernelManager from '../views/KernelManager.vue';
 import Logs from '../views/Logs.vue';
 import Settings from '../views/Settings.vue';
+import NodeManager from '../views/NodeManager.vue';
 import Login from '../views/Login.vue';
 import Setup from '../views/Setup.vue';
 import axios from 'axios';
@@ -44,6 +45,11 @@ const routes = [
                 path: 'settings',
                 name: 'Settings',
                 component: Settings
+            },
+            {
+                path: 'nodes',
+                name: 'NodeManager',
+                component: NodeManager
             }
         ]
     }
