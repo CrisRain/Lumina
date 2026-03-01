@@ -3,6 +3,8 @@ import logging
 import httpx
 from abc import ABC, abstractmethod
 from typing import Dict, Optional, Union, List
+import os
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,7 @@ class WarpBackendController(ABC):
     _status_cache: Optional[Dict] = None
     _status_cache_time: float = 0
     _STATUS_CACHE_TTL: float = 2.0
+    _service_manager_cache: Optional[str] = None
 
     def __init__(self, socks5_port: int = 1080):
         self.socks5_port = socks5_port
@@ -67,6 +70,132 @@ class WarpBackendController(ABC):
         except Exception as e:
             logger.error(f"Error executing '{command}': {e}")
             return -1, "", str(e)
+
+    @classmethod
+    def _detect_service_manager(cls) -> str:
+        forced = (os.getenv("LUMINA_SERVICE_MANAGER", "") or "").strip().lower()
+        if forced in {"s6", "systemd"}:
+            return forced
+
+        if shutil.which("s6-rc") and os.path.exists("/run/service"):
+            return "s6"
+        if shutil.which("systemctl"):
+            return "systemd"
+        return "unknown"
+
+    @classmethod
+    def _service_manager(cls) -> str:
+        if cls._service_manager_cache is None:
+            cls._service_manager_cache = cls._detect_service_manager()
+            logger.info(f"Detected service manager: {cls._service_manager_cache}")
+        return cls._service_manager_cache
+
+    @staticmethod
+    def _systemd_unit(service: str) -> str:
+        mapping = {
+            "warp-svc": "lumina-warp-svc.service",
+            "usque": "lumina-usque.service",
+            "socat": "lumina-socat.service",
+        }
+        return mapping.get(service, service)
+
+    async def _service_start(self, service: str) -> bool:
+        manager = self._service_manager()
+        if manager == "s6":
+            rc, _, stderr = await self._run_command(f"s6-rc -u change {service}")
+            if rc != 0:
+                logger.error(f"Failed to start {service} via s6: {stderr}")
+                return False
+            return True
+
+        if manager == "systemd":
+            unit = self._systemd_unit(service)
+            rc, _, stderr = await self._run_command(["systemctl", "start", unit])
+            if rc != 0:
+                logger.error(f"Failed to start {unit} via systemd: {stderr}")
+                return False
+            return True
+
+        logger.error(f"No supported service manager found to start '{service}'")
+        return False
+
+    async def _service_stop(self, service: str) -> bool:
+        manager = self._service_manager()
+        if manager == "s6":
+            rc, _, stderr = await self._run_command(f"s6-rc -d change {service}")
+            if rc != 0:
+                logger.warning(f"Failed to stop {service} via s6: {stderr}")
+                return False
+            return True
+
+        if manager == "systemd":
+            unit = self._systemd_unit(service)
+            rc, _, stderr = await self._run_command(["systemctl", "stop", unit])
+            if rc != 0:
+                logger.warning(f"Failed to stop {unit} via systemd: {stderr}")
+                return False
+            return True
+
+        logger.error(f"No supported service manager found to stop '{service}'")
+        return False
+
+    async def _service_is_active(self, service: str) -> bool:
+        manager = self._service_manager()
+        if manager == "s6":
+            rc, stdout, _ = await self._run_command(f"s6-svstat -o up /run/service/{service}")
+            return rc == 0 and stdout.strip() == "true"
+
+        if manager == "systemd":
+            unit = self._systemd_unit(service)
+            rc, _, _ = await self._run_command(["systemctl", "is-active", "--quiet", unit])
+            return rc == 0
+
+        return False
+
+    @staticmethod
+    def _upsert_env_file(path: str, key: str, value: str):
+        existing: List[str] = []
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    existing = f.read().splitlines()
+            except OSError:
+                existing = []
+
+        target = f"{key}={value}"
+        updated: List[str] = []
+        replaced = False
+        for line in existing:
+            if line.startswith(f"{key}="):
+                updated.append(target)
+                replaced = True
+            else:
+                updated.append(line)
+        if not replaced:
+            updated.append(target)
+
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(updated).rstrip() + "\n")
+
+    def _write_runtime_env(self, key: str, value: str) -> None:
+        manager = self._service_manager()
+        if manager == "s6":
+            env_dir = "/var/run/s6/container_environment"
+            try:
+                os.makedirs(env_dir, exist_ok=True)
+                with open(os.path.join(env_dir, key), "w", encoding="utf-8") as f:
+                    f.write(value)
+            except OSError:
+                pass
+            return
+
+        if manager == "systemd":
+            env_file = os.getenv("LUMINA_ENV_FILE", "/etc/lumina/lumina.env")
+            try:
+                self._upsert_env_file(env_file, key, value)
+            except OSError as e:
+                logger.warning(f"Failed to update systemd env file {env_file}: {e}")
 
     async def _is_port_open(self, port: int) -> bool:
         """Check if a local port is listening using 'ss'"""

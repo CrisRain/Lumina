@@ -2,6 +2,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
+import os
 from ..controllers.config_controller import ConfigManager
 from ..controllers.warp_controller import WarpController
 from ..controllers.auth_controller import AuthHandler
@@ -10,6 +11,39 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 config_mgr = ConfigManager.get_instance()
 auth_handler = AuthHandler.get_instance()
+
+
+def _upsert_env_setting(key: str, value: str):
+    env_file = os.getenv("LUMINA_ENV_FILE", "/etc/lumina/lumina.env")
+    if not env_file:
+        return
+
+    lines = []
+    try:
+        if os.path.exists(env_file):
+            with open(env_file, "r", encoding="utf-8") as f:
+                lines = f.read().splitlines()
+    except OSError:
+        return
+
+    target = f"{key}={value}"
+    replaced = False
+    out = []
+    for line in lines:
+        if line.startswith(f"{key}="):
+            out.append(target)
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(target)
+
+    try:
+        os.makedirs(os.path.dirname(env_file), exist_ok=True)
+        with open(env_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(out).rstrip() + "\n")
+    except OSError:
+        pass
 
 
 class SetupRequest(BaseModel):
@@ -37,6 +71,8 @@ async def initialize_panel(req: SetupRequest):
     config_mgr.set("socks5_port", int(req.socks5_port or 1080))
     config_mgr.set("panel_port", int(req.panel_port or 8000))
     config_mgr.set("initialized", True)
+    _upsert_env_setting("SOCKS5_PORT", str(config_mgr.socks5_port))
+    _upsert_env_setting("PANEL_PORT", str(config_mgr.panel_port))
 
     if config_mgr.socks5_port != previous_socks5:
         try:

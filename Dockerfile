@@ -146,6 +146,6 @@ EXPOSE 8000 1080
 
 # ---- Health check ----
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:${PANEL_PORT:-8000}/api/status || exit 1
+    CMD sh -c 'PORT="$(cat /var/run/s6/container_environment/PANEL_PORT 2>/dev/null || echo "${PANEL_PORT:-8000}")"; SSL="$(cat /var/run/s6/container_environment/PANEL_SSL_ENABLED 2>/dev/null || echo "${PANEL_SSL_ENABLED:-true}")"; if [ "$SSL" = "true" ]; then curl -fk "https://localhost:${PORT}/api/status" || curl -f "http://localhost:${PORT}/api/status"; else curl -f "http://localhost:${PORT}/api/status" || curl -fk "https://localhost:${PORT}/api/status"; fi' || exit 1
 
 ENTRYPOINT ["/init"]

@@ -2,7 +2,7 @@
   <div class="space-y-6">
     <div>
       <h2 class="text-2xl font-bold text-gray-900">Settings</h2>
-      <p class="text-sm text-gray-500">Configure runtime ports and account security</p>
+      <p class="text-sm text-gray-500">Configure runtime ports, HTTPS certificates, and account security</p>
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -67,6 +67,113 @@
           <p class="text-xs text-amber-700 flex items-center gap-1.5">
             <ExclamationTriangleIcon class="w-4 h-4 flex-shrink-0" />
             Panel port changed. Please restart the service for changes to take effect.
+          </p>
+        </div>
+      </div>
+
+      <!-- SSL Configuration -->
+      <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 md:col-span-2">
+        <h3 class="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+          <LockClosedIcon class="w-5 h-5 text-sky-500" />
+          SSL / HTTPS
+        </h3>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div class="space-y-3">
+            <label class="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
+              <input
+                v-model="sslEnabled"
+                type="checkbox"
+                class="rounded border-gray-300 text-sky-600 focus:ring-sky-500"
+                :disabled="isSslProcessing"
+              />
+              Enable HTTPS for panel
+            </label>
+            <p class="text-xs text-gray-500">
+              After saving, restart the API service to apply certificate changes.
+            </p>
+
+            <label class="inline-flex items-center gap-2 text-sm font-medium text-gray-700">
+              <input
+                v-model="sslAutoSelfSigned"
+                type="checkbox"
+                class="rounded border-gray-300 text-sky-600 focus:ring-sky-500"
+                :disabled="isSslProcessing || !sslEnabled"
+              />
+              Auto-generate self-signed certificate when missing
+            </label>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Certificate Domain (CN)</label>
+              <input
+                v-model.trim="sslDomain"
+                type="text"
+                placeholder="localhost"
+                class="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-sky-500 focus:ring-2 focus:ring-sky-100 outline-none transition-all text-sm"
+                :disabled="isSslProcessing || !sslEnabled || !sslAutoSelfSigned"
+              />
+            </div>
+          </div>
+
+          <div class="space-y-3">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Certificate File Path</label>
+              <input
+                v-model.trim="sslCertFile"
+                type="text"
+                placeholder="/app/data/ssl/panel.crt"
+                class="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-sky-500 focus:ring-2 focus:ring-sky-100 outline-none transition-all font-mono text-sm"
+                :disabled="isSslProcessing || !sslEnabled"
+              />
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Private Key File Path</label>
+              <input
+                v-model.trim="sslKeyFile"
+                type="text"
+                placeholder="/app/data/ssl/panel.key"
+                class="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:border-sky-500 focus:ring-2 focus:ring-sky-100 outline-none transition-all font-mono text-sm"
+                :disabled="isSslProcessing || !sslEnabled"
+              />
+            </div>
+
+            <p class="text-xs text-gray-500">
+              Current files:
+              <span :class="sslCertExists ? 'text-emerald-700' : 'text-amber-700'">
+                cert {{ sslCertExists ? 'exists' : 'missing' }}
+              </span>
+              ,
+              <span :class="sslKeyExists ? 'text-emerald-700' : 'text-amber-700'">
+                key {{ sslKeyExists ? 'exists' : 'missing' }}
+              </span>
+            </p>
+          </div>
+        </div>
+
+        <div class="mt-4 flex items-center justify-between">
+          <p class="text-[10px] text-gray-400">
+            If certificate files are missing and auto-generate is enabled, a self-signed certificate is created automatically.
+          </p>
+          <button
+            @click="saveSslConfig"
+            :disabled="isSslProcessing || (!sslChanged)"
+            class="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {{ isSslProcessing ? 'SAVING...' : 'SAVE SSL' }}
+          </button>
+        </div>
+
+        <div v-if="sslGeneratedNotice" class="mt-3 p-3 bg-emerald-50 rounded-xl border border-emerald-200">
+          <p class="text-xs text-emerald-700">
+            Self-signed certificate generated successfully.
+          </p>
+        </div>
+
+        <div v-if="sslRestartRequired" class="mt-3 p-3 bg-amber-50 rounded-xl border border-amber-200">
+          <p class="text-xs text-amber-700 flex items-center gap-1.5">
+            <ExclamationTriangleIcon class="w-4 h-4 flex-shrink-0" />
+            SSL settings changed. Please restart the service for changes to take effect.
           </p>
         </div>
       </div>
@@ -160,7 +267,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import axios from 'axios';
-import { ExclamationTriangleIcon, ShieldCheckIcon, ServerStackIcon } from '@heroicons/vue/24/outline';
+import { ExclamationTriangleIcon, ShieldCheckIcon, ServerStackIcon, LockClosedIcon } from '@heroicons/vue/24/outline';
 import { useRouter } from 'vue-router';
 import { useWarpActions } from '../composables/usePolling';
 
@@ -177,6 +284,9 @@ const newPassword = ref('');
 const confirmNewPassword = ref('');
 const securityError = ref('');
 const securitySuccess = ref('');
+const isSslProcessing = ref(false);
+const sslRestartRequired = ref(false);
+const sslGeneratedNotice = ref(false);
 
 // Port config (loaded from API)
 const socks5Port = ref(1080);
@@ -184,8 +294,32 @@ const panelPort = ref(8000);
 const savedSocks5Port = ref(1080);
 const savedPanelPort = ref(8000);
 
+// SSL config (loaded from API)
+const sslEnabled = ref(false);
+const sslCertFile = ref('');
+const sslKeyFile = ref('');
+const sslAutoSelfSigned = ref(true);
+const sslDomain = ref('localhost');
+const savedSslEnabled = ref(false);
+const savedSslCertFile = ref('');
+const savedSslKeyFile = ref('');
+const savedSslAutoSelfSigned = ref(true);
+const savedSslDomain = ref('localhost');
+const sslCertExists = ref(false);
+const sslKeyExists = ref(false);
+
 const portsChanged = computed(() => {
   return socks5Port.value !== savedSocks5Port.value || panelPort.value !== savedPanelPort.value;
+});
+
+const sslChanged = computed(() => {
+  return (
+    sslEnabled.value !== savedSslEnabled.value ||
+    sslCertFile.value !== savedSslCertFile.value ||
+    sslKeyFile.value !== savedSslKeyFile.value ||
+    sslAutoSelfSigned.value !== savedSslAutoSelfSigned.value ||
+    sslDomain.value !== savedSslDomain.value
+  );
 });
 
 const canChangePassword = computed(() => {
@@ -205,6 +339,27 @@ const loadPorts = async () => {
   savedSocks5Port.value = socks5Port.value;
   savedPanelPort.value = panelPort.value;
   restartRequired.value = false;
+};
+
+const loadSslConfig = async () => {
+  const data = await apiCall('get', '/config/ssl');
+  if (!data) return;
+
+  sslEnabled.value = Boolean(data.panel_ssl_enabled);
+  sslCertFile.value = String(data.panel_ssl_cert_file || '');
+  sslKeyFile.value = String(data.panel_ssl_key_file || '');
+  sslAutoSelfSigned.value = Boolean(data.panel_ssl_auto_self_signed ?? true);
+  sslDomain.value = String(data.panel_ssl_domain || 'localhost');
+  sslCertExists.value = Boolean(data.cert_exists);
+  sslKeyExists.value = Boolean(data.key_exists);
+
+  savedSslEnabled.value = sslEnabled.value;
+  savedSslCertFile.value = sslCertFile.value;
+  savedSslKeyFile.value = sslKeyFile.value;
+  savedSslAutoSelfSigned.value = sslAutoSelfSigned.value;
+  savedSslDomain.value = sslDomain.value;
+  sslRestartRequired.value = false;
+  sslGeneratedNotice.value = false;
 };
 
 const loadSessions = async () => {
@@ -313,8 +468,49 @@ const savePorts = async () => {
   restartRequired.value = Boolean(res.restart_required);
 };
 
+const saveSslConfig = async () => {
+  if (!sslChanged.value) return;
+
+  if (sslEnabled.value && !sslAutoSelfSigned.value && (!sslCertFile.value || !sslKeyFile.value)) {
+    alert('Please provide certificate and key paths when auto-generate is disabled.');
+    return;
+  }
+
+  isSslProcessing.value = true;
+  sslGeneratedNotice.value = false;
+
+  const res = await apiCall('post', '/config/ssl', {
+    panel_ssl_enabled: Boolean(sslEnabled.value),
+    panel_ssl_cert_file: sslCertFile.value,
+    panel_ssl_key_file: sslKeyFile.value,
+    panel_ssl_auto_self_signed: Boolean(sslAutoSelfSigned.value),
+    panel_ssl_domain: sslDomain.value || 'localhost'
+  });
+
+  isSslProcessing.value = false;
+  if (!res?.success) return;
+
+  sslEnabled.value = Boolean(res.panel_ssl_enabled);
+  sslCertFile.value = String(res.panel_ssl_cert_file || sslCertFile.value);
+  sslKeyFile.value = String(res.panel_ssl_key_file || sslKeyFile.value);
+  sslAutoSelfSigned.value = Boolean(res.panel_ssl_auto_self_signed ?? sslAutoSelfSigned.value);
+  sslDomain.value = String(res.panel_ssl_domain || sslDomain.value || 'localhost');
+  sslCertExists.value = Boolean(res.cert_exists);
+  sslKeyExists.value = Boolean(res.key_exists);
+
+  savedSslEnabled.value = sslEnabled.value;
+  savedSslCertFile.value = sslCertFile.value;
+  savedSslKeyFile.value = sslKeyFile.value;
+  savedSslAutoSelfSigned.value = sslAutoSelfSigned.value;
+  savedSslDomain.value = sslDomain.value;
+
+  sslGeneratedNotice.value = Boolean(res.generated_self_signed);
+  sslRestartRequired.value = Boolean(res.restart_required);
+};
+
 onMounted(() => {
   loadPorts();
+  loadSslConfig();
   loadSessions();
 });
 </script>

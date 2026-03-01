@@ -13,9 +13,14 @@ services:
       - /dev/net/tun:/dev/net/tun
     environment:
       - WARP_BACKEND=usque # Options: 'usque' (default), 'official'
+      - PANEL_SSL_ENABLED=true
+      - PANEL_SSL_AUTO_SELF_SIGNED=true
+      - PANEL_HTTP_REDIRECT_ENABLED=true
+      - PANEL_HTTP_REDIRECT_PORT=80
     stop_signal: SIGTERM
     ports:
-      - "8000:8000" # Web UI (served by FastAPI)
+      - "80:80" # HTTP -> HTTPS redirect (enabled when PANEL_SSL_ENABLED=true)
+      - "8000:8000" # Web UI over HTTPS (served by FastAPI)
       - "127.0.0.1:1080:1080" # SOCKS5 Proxy (localhost only)
     volumes:
       - lumina_data:/var/lib/cloudflare-warp

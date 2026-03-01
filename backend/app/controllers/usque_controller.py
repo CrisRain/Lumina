@@ -1,17 +1,17 @@
-# controller-app/app/usque_controller.py
 """
 UsqueController - WARP backend implementation using usque
-Supports both proxy mode (SOCKS5) and TUN mode
+Supports proxy mode in both container (s6) and bare-metal (systemd).
 """
 import asyncio
 import logging
-import json
 import os
-from typing import Optional, Dict
+from typing import Dict
+
 from .kernel_controller import KernelVersionManager
 from .base_controller import WarpBackendController
 
 logger = logging.getLogger(__name__)
+
 
 class UsqueController(WarpBackendController):
 
@@ -29,30 +29,32 @@ class UsqueController(WarpBackendController):
     # ------------------------------------------------------------------
 
     async def initialize(self) -> bool:
-        """Initialize usque backend (register if needed)"""
+        """Initialize usque backend (register if needed)."""
         try:
             config_dir = os.path.dirname(self.config_path)
             os.makedirs(config_dir, exist_ok=True)
 
             if not os.path.exists(self.config_path):
                 logger.info("Config not found, registering new usque account...")
-                
-                binary_path = KernelVersionManager.get_instance().get_binary_path('usque')
+
+                binary_path = KernelVersionManager.get_instance().get_binary_path("usque")
                 process = await asyncio.create_subprocess_exec(
-                    binary_path, "register",
+                    binary_path,
+                    "register",
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=config_dir,
                 )
-                stdout, stderr = await process.communicate(input=b"y\n")
+                _, stderr = await process.communicate(input=b"y\n")
 
                 if process.returncode == 0:
                     logger.info("usque registration successful")
                     return True
-                else:
-                    logger.error(f"usque registration failed: {stderr.decode()}")
-                    return False
+
+                logger.error(f"usque registration failed: {stderr.decode()}")
+                return False
+
             return True
         except Exception as e:
             logger.error(f"Error initializing usque: {e}")
@@ -63,7 +65,7 @@ class UsqueController(WarpBackendController):
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
-        """Start usque in proxy mode"""
+        """Start usque in proxy mode."""
         if not await self.initialize():
             logger.error("Failed to initialize usque backend")
             return False
@@ -75,17 +77,15 @@ class UsqueController(WarpBackendController):
         return await self._connect_proxy()
 
     async def _connect_proxy(self) -> bool:
-        """Start usque SOCKS5 proxy via s6"""
+        """Start usque SOCKS5 proxy via the active service manager."""
         try:
             logger.info(f"Starting usque service (proxy mode, port {self.socks5_port})...")
-            self._write_s6_env("SOCKS5_PORT", str(self.socks5_port))
+            self._write_runtime_env("SOCKS5_PORT", str(self.socks5_port))
 
-            # Stop first (idempotent — ok if it wasn't running)
-            await self._run_command("s6-rc -d change usque")
+            # Stop first (idempotent; fine if not running)
+            await self._service_stop("usque")
             await asyncio.sleep(0.5)
-            rc, _, stderr = await self._run_command("s6-rc -u change usque")
-            if rc != 0:
-                logger.error(f"Failed to start usque via s6-rc: {stderr}")
+            if not await self._service_start("usque"):
                 return False
 
             logger.info("Waiting for usque proxy to become ready...")
@@ -101,22 +101,11 @@ class UsqueController(WarpBackendController):
             logger.error(f"Failed to start usque proxy: {e}")
             return False
 
-    @staticmethod
-    def _write_s6_env(key: str, value: str) -> None:
-        """Persist an env var into the s6 container environment store."""
-        env_dir = "/var/run/s6/container_environment"
-        try:
-            os.makedirs(env_dir, exist_ok=True)
-            with open(os.path.join(env_dir, key), "w") as f:
-                f.write(value)
-        except OSError:
-            pass
-
     async def disconnect(self) -> bool:
-        """Stop usque service"""
+        """Stop usque service."""
         try:
             logger.info("Stopping usque services...")
-            await self._run_command("s6-rc -d change usque")
+            await self._service_stop("usque")
             self.process = None
             self._invalidate_status_cache()
             return True
@@ -129,28 +118,20 @@ class UsqueController(WarpBackendController):
     # ------------------------------------------------------------------
 
     async def _is_proxy_connected(self) -> bool:
-        """Check if usque SOCKS5 proxy is running"""
-        rc, stdout, _ = await self._run_command("s6-svstat -o up /run/service/usque")
-        if rc != 0 or stdout.strip() != "true":
+        """Check if usque SOCKS5 proxy is running."""
+        if not await self._service_is_active("usque"):
             return False
         return await self._is_port_open(self.socks5_port)
 
     async def is_connected(self) -> bool:
-        """Check if usque is running"""
+        """Check if usque is running."""
         return await self._is_proxy_connected()
 
     # ------------------------------------------------------------------
-    # Status (Override common method if needed, otherwise use Base)
+    # Status
     # ------------------------------------------------------------------
-    
+
     async def _get_status_uncached(self) -> Dict:
-        # Get base status
         base = await super()._get_status_uncached()
-        base["backend"] = "usque" # Explicitly set backend name if needed
+        base["backend"] = "usque"
         return base
-
-    # ------------------------------------------------------------------
-    # Custom operations
-    # ------------------------------------------------------------------
-
-

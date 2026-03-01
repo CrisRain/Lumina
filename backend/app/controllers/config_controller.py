@@ -15,6 +15,11 @@ class ConfigManager:
         "socks5_port": 1080,
         "panel_port": 8000,
         "panel_password": "",
+        "panel_ssl_enabled": True,
+        "panel_ssl_cert_file": "",
+        "panel_ssl_key_file": "",
+        "panel_ssl_auto_self_signed": True,
+        "panel_ssl_domain": "localhost",
     }
 
     def __init__(self):

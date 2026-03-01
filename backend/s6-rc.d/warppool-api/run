@@ -1,2 +1,46 @@
 #!/command/with-contenv sh
-exec uvicorn app.main:app --host 0.0.0.0 --port "${PANEL_PORT:-8000}" --app-dir /app
+set -e
+
+PORT="${PANEL_PORT:-8000}"
+SSL_ENABLED="${PANEL_SSL_ENABLED:-true}"
+SSL_CERT="${PANEL_SSL_CERT_FILE:-/app/data/ssl/panel.crt}"
+SSL_KEY="${PANEL_SSL_KEY_FILE:-/app/data/ssl/panel.key}"
+SSL_AUTO_SELF_SIGNED="${PANEL_SSL_AUTO_SELF_SIGNED:-true}"
+SSL_DOMAIN="${PANEL_SSL_DOMAIN:-localhost}"
+HTTP_REDIRECT_ENABLED="${PANEL_HTTP_REDIRECT_ENABLED:-true}"
+REDIRECT_PID=""
+
+cleanup_redirect() {
+  if [ -n "${REDIRECT_PID}" ] && kill -0 "${REDIRECT_PID}" 2>/dev/null; then
+    kill "${REDIRECT_PID}" 2>/dev/null || true
+    wait "${REDIRECT_PID}" 2>/dev/null || true
+  fi
+}
+
+trap 'cleanup_redirect' EXIT INT TERM
+
+if [ "${SSL_ENABLED}" = "true" ] && [ "${SSL_AUTO_SELF_SIGNED}" = "true" ] && { [ ! -f "${SSL_CERT}" ] || [ ! -f "${SSL_KEY}" ]; }; then
+  PYTHONPATH=/app python3 - "${SSL_CERT}" "${SSL_KEY}" "${SSL_DOMAIN}" <<'PY'
+import sys
+from app.utils.tls import ensure_self_signed_certificate
+
+cert_path, key_path, domain = sys.argv[1], sys.argv[2], sys.argv[3]
+ensure_self_signed_certificate(cert_path=cert_path, key_path=key_path, common_name=domain)
+PY
+fi
+
+if [ "${SSL_ENABLED}" = "true" ] && [ "${HTTP_REDIRECT_ENABLED}" = "true" ]; then
+  PYTHONPATH=/app python3 -m app.utils.http_redirect &
+  REDIRECT_PID="$!"
+fi
+
+if [ "${SSL_ENABLED}" = "true" ]; then
+  if [ -f "${SSL_CERT}" ] && [ -f "${SSL_KEY}" ]; then
+    exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT}" --app-dir /app \
+      --ssl-certfile "${SSL_CERT}" --ssl-keyfile "${SSL_KEY}"
+  fi
+
+  echo "WARN: PANEL_SSL_ENABLED=true but SSL files not found: cert=${SSL_CERT} key=${SSL_KEY}" >&2
+fi
+
+exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT}" --app-dir /app

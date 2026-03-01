@@ -36,8 +36,7 @@ class OfficialController(WarpBackendController):
 
     async def _is_daemon_responsive(self) -> bool:
         """Check if warp-svc is running AND responsive"""
-        rc, stdout, _ = await self._run_command("s6-svstat -o up /run/service/warp-svc")
-        if rc != 0 or stdout.strip() != "true":
+        if not await self._service_is_active("warp-svc"):
             return False
         rc, _, _ = await self._run_command("warp-cli --accept-tos status", timeout=2)
         return rc == 0
@@ -123,9 +122,7 @@ class OfficialController(WarpBackendController):
             logger.info("Starting background services (proxy mode)...")
             self.mute_backend_logs = False
 
-            rc, _, stderr = await self._run_command("s6-rc -u change warp-svc")
-            if rc != 0:
-                logger.error(f"Failed to start warp-svc: {stderr}")
+            if not await self._service_start("warp-svc"):
                 return False
 
             await asyncio.sleep(3)
@@ -164,8 +161,8 @@ class OfficialController(WarpBackendController):
         """Stop all possible services (safe for both modes)"""
         logger.info("Stopping official services...")
         try:
-            await self._run_command("s6-rc -d change socat")
-            await self._run_command("s6-rc -d change warp-svc")
+            await self._service_stop("socat")
+            await self._service_stop("warp-svc")
         except Exception as e:
             logger.error(f"Error stopping services: {e}")
 
@@ -178,44 +175,33 @@ class OfficialController(WarpBackendController):
         if self.mode != "proxy":
             return
 
-        s6_active = False
+        service_active = False
         try:
-            rc, stdout, _ = await self._run_command("s6-svstat -o up /run/service/socat")
-            s6_active = rc == 0 and stdout.strip() == "true"
+            service_active = await self._service_is_active("socat")
         except Exception:
             pass
 
         port_open = await self._is_port_open(self.socks5_port)
 
-        if s6_active and port_open:
+        if service_active and port_open:
             return
 
-        # Write updated port into the s6 container environment so the
-        # run script picks it up on next start.
-        self._write_s6_env("SOCKS5_PORT", str(self.socks5_port))
+        # Persist port for the active runtime manager (s6/systemd).
+        self._write_runtime_env("SOCKS5_PORT", str(self.socks5_port))
 
         logger.info(f"Starting socat service (port {self.socks5_port})...")
         try:
-            await self._run_command("s6-rc -d change socat")
+            await self._service_stop("socat")
             await asyncio.sleep(0.3)
-            await self._run_command("s6-rc -u change socat")
+            if not await self._service_start("socat"):
+                logger.error("Failed to start socat")
+                return
             await asyncio.sleep(1)
             if not await self._is_port_open(self.socks5_port):
                 logger.warning(f"Socat started but port {self.socks5_port} not listening yet")
                 await asyncio.sleep(2)
         except Exception as e:
             logger.error(f"Error starting socat: {e}")
-
-    @staticmethod
-    def _write_s6_env(key: str, value: str) -> None:
-        """Persist an env var into the s6 container environment store."""
-        env_dir = "/var/run/s6/container_environment"
-        try:
-            os.makedirs(env_dir, exist_ok=True)
-            with open(os.path.join(env_dir, key), "w") as f:
-                f.write(value)
-        except OSError:
-            pass
 
 
     # ------------------------------------------------------------------
